@@ -552,7 +552,7 @@ function ChatDetailScreenInner() {
     try {
       const nextPage = page + 1;
       const result = await chatApi.getMessages(convId, { page_num: nextPage, page_size: 50 });
-      const msgs = (result.items || []).filter((m: any) => m && m.id && (m.role === 'user' || (m.content && m.content.trim()))).reverse();
+      const msgs = (result.items || []).filter((m: any) => m && m.id && (m.role === "user" || (m.content && m.content.trim() && !m.content.includes("generate_answer_finish")))).map((m: any) => ({...m, content: m.content?.replace(/[$TRAE_REF](.*?)/g, "")})).reverse();
       if (msgs.length === 0) {
         setHasMore(false);
       } else {
@@ -658,7 +658,7 @@ function ChatDetailScreenInner() {
         } else {
           setConversationId(id);
           const result = await chatApi.getMessages(id, { page_num: 1, page_size: 50 });
-          const msgs = (result.items || []).filter((m: any) => m && m.id && (m.role === 'user' || (m.content && m.content.trim())));
+          const msgs = (result.items || []).filter((m: any) => m && m.id && (m.role === "user" || (m.content && m.content.trim() && !m.content.includes("generate_answer_finish")))).map((m: any) => ({...m, content: m.content?.replace(/[$TRAE_REF](.*?)/g, "")}));
           msgs.reverse();
           if (!cancelled) {
             
@@ -1756,9 +1756,7 @@ function ChatDetailScreenInner() {
           extraData={videoTasks}
           onScroll={handleScroll}
           onContentSizeChange={() => {
-            if (useChatStore.getState().isStreaming) {
-              flatListRef.current?.scrollToEnd({ animated: false });
-            }
+            setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 50);
           }}
           scrollEventThrottle={Platform.OS === 'web' ? 0 : 100}
         />
