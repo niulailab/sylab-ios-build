@@ -371,6 +371,13 @@ const sanitizeVideoContent = (text: string): string => {
 };
 
 
+
+// Strip emoji from AI text content (system prompt says no emoji but model doesn't always comply)
+const stripEmoji = (text: string): string => {
+  if (!text) return text;
+  return text.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F000}-\u{1F02F}]|[\u{1F0A0}-\u{1F0FF}]|[\u{1F100}-\u{1F1FF}]|[\u{1F200}-\u{1F2FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F900}-\u{1F9FF}]|\u{FE0F}|\u{200D}/gu, '');
+};
+
 const stripMarkdown = (text: string): string => {
   if (!text) return "";
   return text
@@ -1021,7 +1028,7 @@ function ChatDetailScreenInner() {
 
 
 
-    setActivityStatus("thinking");
+    setActivityStatus("正在思考理解…");
     streamRef.current = sendMessageStream(
       {
         bot_id: currentBotId,
@@ -1035,8 +1042,9 @@ function ChatDetailScreenInner() {
       {
         onDelta: (delta) => {
           sseReceivedData = true;
-          localAiAccum += delta;
-          appendDelta(delta);
+          const cleanDelta = stripEmoji(delta);
+          localAiAccum += cleanDelta;
+          appendDelta(cleanDelta);
         },
         onToolCall: (name, args, result) => {
           if (result) {
@@ -1093,7 +1101,7 @@ function ChatDetailScreenInner() {
           })();
           clearTask();
           // Use closure-captured content (immune to store/state resets)
-          const capturedAiContent = localAiAccum || useChatStore.getState().streamingContent;
+          const capturedAiContent = stripEmoji(localAiAccum || useChatStore.getState().streamingContent);
           const aiMsgId = chatId || `msg_${Date.now()}`;
           // Capture toolCalls from store BEFORE clearing streaming state
           const savedToolCalls = useChatStore.getState().toolCalls;
@@ -1912,7 +1920,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff', paddingTop: Platform.OS === 'web' ? 0 : 0, paddingBottom: Platform.OS === 'web' ? 0 : Spacing.sm },
   loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyArea: { flex: 1, justifyContent: 'center' },
-  listContent: { paddingVertical: Spacing.md, paddingBottom: 140 },
+  listContent: { paddingVertical: Spacing.md, paddingBottom: 180 },
   errorBar: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: '#fef2f2',

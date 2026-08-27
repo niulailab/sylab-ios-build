@@ -157,12 +157,15 @@ export function sendMessageStream(
               if (currentEvent === 'conversation.message.delta') {
                 // Support both top-level and nested message_item
                 const dMsg = data.message_item || data;
-                if (dMsg.content) {
+                const dType = (dMsg.type || dMsg.message_type || '').toLowerCase();
+                // Only process answer-type messages; skip function_call/tool_response/verbose fragments
+                const isAnswerType = !dType || dType === 'answer' || dType === 'text';
+                if (isAnswerType && dMsg.content) {
                   callbacks.onDelta(dMsg.content);
                   if (dMsg.role === "assistant") fullAssistantContent += dMsg.content;
                   callbacks.onStatus?.('streaming');
                 }
-                if (dMsg.reasoning_content && !dMsg.content) {
+                if (isAnswerType && dMsg.reasoning_content && !dMsg.content) {
                   callbacks.onStatus?.('thinking');
                 }
                 // Detect tool_calls in delta (some formats)
