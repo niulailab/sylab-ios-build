@@ -21,8 +21,9 @@ import { MessageBubble } from '../../src/components/MessageBubble';
 import { ChatInput, getPendingFiles, clearPendingFiles } from '../../src/components/ChatInput';
 import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonLoader } from '../../src/components/SkeletonLoader';
-import { TypingIndicator } from '../../src/components/TypingIndicator';
+import { TypingIndicator, getToolLabel } from '../../src/components/TypingIndicator';
 import { GenerationPlaceholder } from '../../src/components/GenerationPlaceholder';
+import { TaskStatusCard, getToolMeta } from '../../src/components/TaskStatusCard';
 import { Ionicons } from '@expo/vector-icons';
 import type { ChatMessage } from '../../src/types/api';
 
@@ -427,37 +428,7 @@ function ChatDetailScreenInner() {
   const navigation = useNavigation();
   const router = useRouter();
   const flatListRef = useRef<FlatList>(null);
-
-  // Auto-scroll when messages array changes (new message added)
-  const messagesLength = messages.length;
-  useEffect(() => {
-    if (messagesLength > 0) {
-      requestAnimationFrame(() => {
-        flatListRef.current?.scrollToEnd({ animated: false });
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 350);
-      });
-    }
-  }, [messagesLength, isStreaming]);
-
-  const [showScrollBtn, setShowScrollBtn] = useState(false);
-  const streamRef = useRef<{ abort: () => void } | null>(null);
-  const queueTaskIdRef = useRef<string | null>(null);
-  const inFlightSendRef = useRef<string | null>(null);
-  const ssePollingTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const { registerTask, clearTask, activeTaskRef, getActiveTask } = useChatQueue(id as string);
-
-  const scrollToBottom = () => {
-    flatListRef.current?.scrollToEnd({ animated: true });
-  };
-
-  const handleScroll = (event: any) => {
-    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
-    const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
-    const shouldShow = distanceFromBottom > 200;
-    setShowScrollBtn(prev => prev !== shouldShow ? shouldShow : prev);
-  };
-
+  const isNearBottomRef = useRef(true);
 
   const { user, patToken, isRestoring } = useAuthStore();
   const userName = (() => {
@@ -473,6 +444,49 @@ function ChatDetailScreenInner() {
     activityStatus, generatingType,
     setActivityStatus,
   } = useChatStore();
+
+  // Auto-scroll when messages array changes (only if user is near bottom)
+  const messagesLength = messages.length;
+  useEffect(() => {
+    if (messagesLength > 0 && isNearBottomRef.current) {
+      requestAnimationFrame(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+        setTimeout(() => { if (isNearBottomRef.current) flatListRef.current?.scrollToEnd({ animated: false }); }, 100);
+      });
+    }
+  }, [messagesLength]);
+
+  // Auto-scroll during streaming (only if near bottom)
+  useEffect(() => {
+    if (isStreaming && isNearBottomRef.current) {
+      const timer = setTimeout(() => {
+        if (isNearBottomRef.current) flatListRef.current?.scrollToEnd({ animated: false });
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [streamingContent, isNearBottomRef.current]);
+
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const streamRef = useRef<{ abort: () => void } | null>(null);
+  const queueTaskIdRef = useRef<string | null>(null);
+  const inFlightSendRef = useRef<string | null>(null);
+  const ssePollingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const { registerTask, clearTask, activeTaskRef, getActiveTask } = useChatQueue(id as string);
+
+  const scrollToBottom = () => {
+    isNearBottomRef.current = true;
+    flatListRef.current?.scrollToEnd({ animated: true });
+  };
+
+  const handleScroll = (event: any) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    isNearBottomRef.current = distanceFromBottom < 150;
+    const shouldShow = distanceFromBottom > 200;
+    setShowScrollBtn(prev => prev !== shouldShow ? shouldShow : prev);
+  };
+
+
 
   const [loading, setLoading] = useState(true);
   const [botName, setBotName] = useState(DEFAULT_BOT_NAME);
@@ -581,7 +595,18 @@ function ChatDetailScreenInner() {
         const prev = useChatStore.getState().messages;
         const validMsgs = msgs.filter((m: any) => m && m.id);
         const existingIds = new Set(prev.map(m => m.id).filter(Boolean));
-        const newMsgs = validMsgs.filter((m: any) => !existingIds.has(m.id));
+        // Also dedup by content+time for local temp msgs vs server msgs
+        const existingKeys = new Set(prev.map((m: any) => {
+          const _t = _ts(m.created_at);
+          return (m.role || '') + '|' + (m.content || '').trim().slice(0, 200) + '|' + Math.floor(_t / 1000);
+        }));
+        const newMsgs = validMsgs.filter((m: any) => {
+          if (existingIds.has(m.id)) return false;
+          const _t = _ts(m.created_at);
+          const _k = (m.role || '') + '|' + (m.content || '').trim().slice(0, 200) + '|' + Math.floor(_t / 1000);
+          if (existingKeys.has(_k)) return false;
+          return true;
+        });
         if (newMsgs.length > 0) {
           setMessages([...newMsgs, ...prev]);
         }
@@ -603,6 +628,7 @@ function ChatDetailScreenInner() {
   useEffect(() => {
     navigation.setOptions({
       title: botName,
+      headerBackTitle: '', headerBackButtonDisplayMode: 'minimal',
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 }}>
           <TouchableOpacity onPress={() => { fetchBots(); setShowBotSelector(true); }}>
@@ -660,6 +686,8 @@ function ChatDetailScreenInner() {
       // Clear old messages when switching conversations
       setMessages([]);
       _sessionMessages = [];
+      _messageBackup.clear();
+      _recentUserMsgs.clear();
       setPage(1);
       setHasMore(true);
 
@@ -684,9 +712,34 @@ function ChatDetailScreenInner() {
           msgs.reverse();
           if (!cancelled) {
             
-            setMessages(msgs);
-            _sessionMessages = msgs;
-            _messageBackup.set(id as string, msgs);
+              // Dedup: merge server msgs with any existing local msgs (e.g., just-sent user message)
+            const _existing = useChatStore.getState().messages;
+            const _serverIds = new Set(msgs.map((m: any) => m.id).filter(Boolean));
+            // Dedup local msgs by content+time against server msgs (local temp IDs won't match server IDs)
+            const _serverKeys = new Set(msgs.map((m: any) => {
+              const _t = _ts(m.created_at);
+              return (m.role || '') + '|' + (m.content || '').trim().slice(0, 200) + '|' + Math.floor(_t / 1000);
+            }));
+            const _localOnly = _existing.filter((m: any) => {
+              if (_serverIds.has(m.id)) return false;
+              const _t = _ts(m.created_at);
+              const _k = (m.role || '') + '|' + (m.content || '').trim().slice(0, 200) + '|' + Math.floor(_t / 1000);
+              if (_serverKeys.has(_k)) return false;
+              return true;
+            });
+            const _merged = [..._localOnly, ...msgs];
+            // Also dedup by content+role for same timestamp (local temp msgs vs server msgs)
+            const _seen = new Set<string>();
+            const _deduped = _merged.filter((m: any) => {
+              const _msts = _ts(m.created_at);
+              const key = m.role + '|' + (m.content || '').trim().slice(0, 100) + '|' + Math.floor(_msts / 1000);
+              if (_seen.has(key)) return false;
+              _seen.add(key);
+              return true;
+            });
+            setMessages(_deduped);
+            _sessionMessages = _deduped;
+            _messageBackup.set(id as string, _deduped);
             // Batch query transactions for historical cost matching
             try {
               const txResult = await creditsApi.getTransactions(user.id, { page: 1, page_size: 50 });
@@ -917,13 +970,19 @@ function ChatDetailScreenInner() {
     if (useChatStore.getState().isStreaming) {
       messageQueueRef.current.push({ text, files: _files, fileIds }); console.log("[Queue] message QUEUED:", (text || "").substring(0,30), "total:", messageQueueRef.current.length);
       // Still add user message to display immediately
+      const qHasImage = _files && _files.some((f: any) => (f.type || '').toLowerCase().startsWith('image/'));
+      let qFirstImg = '';
+      if (qHasImage && _files) {
+        const qFirstFile = _files.find((f: any) => (f.type || '').toLowerCase().startsWith('image/'));
+        qFirstImg = qFirstFile ? (qFirstFile.url || '') : '';
+      }
       const userMsg: ChatMessage = {
         id: `msg_${Date.now()}`,
         conversation_id: effectiveConvId,
         role: 'user',
-        type: 'text',
-        content: text,
-        content_type: 'text',
+        type: qHasImage && qFirstImg ? 'image_url' : 'text',
+        content: qHasImage && qFirstImg ? qFirstImg : text,
+        content_type: qHasImage && qFirstImg ? 'image_url' : 'text',
         created_at: String(Date.now()),
         updated_at: String(Date.now()),
       };
@@ -939,6 +998,13 @@ function ChatDetailScreenInner() {
     }
     
     await doSend(text, _files, fileIds, currentConvId as string);
+  };
+
+  // Normalize any timestamp to milliseconds (server uses seconds, local uses ms)
+  const _ts = (t: any): number => {
+    const n = Number(t);
+    if (!n || isNaN(n)) return 0;
+    return n < 1e12 ? n * 1000 : n;
   };
 
   const doSend = async (text: string, _files?: any[], fileIds?: string[], forcedConvId?: string, skipUserMsg?: boolean) => {
@@ -962,28 +1028,38 @@ function ChatDetailScreenInner() {
     }
 
     if (!skipUserMsg) {
+    // Detect if there are image files attached
+    const hasImageFiles = _files && _files.some((f: any) => (f.type || '').toLowerCase().startsWith('image/'));
+    let firstImageUrl = '';
+    if (hasImageFiles && _files) {
+      const firstImgFile = _files.find((f: any) => (f.type || '').toLowerCase().startsWith('image/'));
+      firstImageUrl = firstImgFile ? (firstImgFile.url || '') : '';
+    }
     const userMsg: ChatMessage = {
       id: `msg_${Date.now()}`,
       conversation_id: effectiveConvId,
       role: 'user',
-      type: 'text',
-      content: finalContent,
-      content_type: 'text',
+      type: hasImageFiles && firstImageUrl ? 'image_url' : 'text',
+      content: hasImageFiles && firstImageUrl ? firstImageUrl : finalContent,
+      content_type: hasImageFiles && firstImageUrl ? 'image_url' : 'text',
       created_at: String(Date.now()),
       updated_at: String(Date.now()),
     };
     lastUserMsgRef.current = userMsg;
-    if (!_isDuplicateUserMsg(effectiveConvId, userMsg.content, Number(userMsg.created_at))) {
-      const _prevB = useChatStore.getState().messages;
+    const _prevB = useChatStore.getState().messages;
+    const _isContentDup = _prevB.some(m => m.role === 'user' && m.content === userMsg.content && Math.abs(_ts(m.created_at) - _ts(userMsg.created_at)) < 10000);
+    if (!_isDuplicateUserMsg(effectiveConvId, userMsg.content, Number(userMsg.created_at)) && !_isContentDup) {
       if (!_prevB.some(m => m.id === userMsg.id)) {
         setMessages([..._prevB, userMsg]);
         _sessionMessages = [..._sessionMessages, userMsg];
       }
     }
-      // Save to nuclear backup immediately
+      // Save to nuclear backup immediately (dedup by content)
       const backupKey = effectiveConvId || 'pending';
       const existing = _messageBackup.get(backupKey) || [];
-      _messageBackup.set(backupKey, [...existing, userMsg]);
+      if (!existing.some(m => m.role === 'user' && m.content === userMsg.content)) {
+        _messageBackup.set(backupKey, [...existing, userMsg]);
+      }
     }
     startStreaming();
 
@@ -995,13 +1071,34 @@ function ChatDetailScreenInner() {
 
     // Build additional_messages: combine files + text into object_string for multimodal support
     const additionalMsgs: Array<{ role: string; content: string; content_type: string }> = [];
-    if (fileIds && fileIds.length > 0) {
-      // Use object_string (mix) format to send files + text together as one message
-      const contentParts: Array<{ type: string; text?: string; file_id?: string }> = [];
+    // Collect image URLs from _files (uploaded via /user-upload)
+    const imageUrls: string[] = [];
+    if (_files && _files.length > 0) {
+      for (const f of _files) {
+        const u = (f as any).url || '';
+        if (u && u.startsWith('http')) imageUrls.push(u);
+      }
+    }
+    const realFileIds: string[] = [];
+    if (fileIds) {
       for (const fid of fileIds) {
+        if (fid && fid.startsWith('http')) {
+          imageUrls.push(fid);
+        } else if (fid) {
+          realFileIds.push(fid);
+        }
+      }
+    }
+
+    if (imageUrls.length > 0 || realFileIds.length > 0) {
+      const contentParts: Array<{ type: string; text?: string; file_id?: string; file_url?: string }> = [];
+      for (const imgUrl of imageUrls) {
+        contentParts.push({ type: 'image', file_url: imgUrl });
+      }
+      for (const fid of realFileIds) {
         contentParts.push({ type: 'file', file_id: fid });
       }
-      contentParts.push({ type: 'text', text: aiContent });
+      contentParts.push({ type: 'text', text: aiContent || '请分析这张图片' });
       additionalMsgs.push({
         role: 'user',
         content: JSON.stringify(contentParts),
@@ -1064,6 +1161,9 @@ function ChatDetailScreenInner() {
         onToolCall: (name, args, result) => {
           if (result) {
             lastToolCompleteRef.current = Date.now();
+            setActivityStatus(`${getToolLabel(name)}完成`);
+          } else {
+            setActivityStatus(`正在${getToolLabel(name)}…`);
           }
           appendToolCall(name, args, result);
           // Detect video task_id from tool result and start polling immediately
@@ -1146,9 +1246,15 @@ function ChatDetailScreenInner() {
             const _now = Date.now();
             const filtered = _cur.filter(m =>
               m.id !== aiMsgId &&
-              !(m.role === 'assistant' && m.content === capturedAiContent && Math.abs(Number(m.created_at) - _now) < 5000)
+              !(m.role === 'assistant' && m.content === capturedAiContent && Math.abs(_ts(m.created_at) - _now) < 5000)
             );
-            setMessages([...filtered, aiMsg]);
+            // Avoid duplicate assistant message with same content
+            const _aiDup = filtered.some(m => m.role === 'assistant' && m.content === capturedAiContent);
+            if (!_aiDup) {
+              setMessages([...filtered, aiMsg]);
+            } else {
+              setMessages(filtered);
+            }
           }
           console.log("[Chat] onComplete: localAi:", localAiAccum.length, "localUser:", localUserContent.length, "sessionMsgs:", _sessionMessages.length, "tokens:", tokens);
           // Token-based billing: deduct credits based on actual token usage
@@ -1400,18 +1506,47 @@ function ChatDetailScreenInner() {
             setActivityStatus("正在输入回复…");
           } else if (status === "tool_running") {
             return;
-          } else if (status === "thinking") {
+          } else if (status === "thinking" || status === "thinking_deep" || status === "thinking_long") {
             if (hasRunningTool) return;
+            const thinkingLabels: Record<string, string> = {
+              thinking: "正在思考理解…",
+              thinking_deep: "正在深度思考…",
+              thinking_long: "AI 正在努力分析中，请稍候…",
+            };
+            const label = thinkingLabels[status] || "正在思考理解…";
             if (completionVisible) {
               setTimeout(() => {
                 const s = useChatStore.getState();
                 if (!s.toolCalls.some(tc => !tc.result) && s.activityStatus.endsWith("完成")) {
-                  setActivityStatus("正在思考理解…");
+                  setActivityStatus(label);
                 }
               }, 1200 - sinceToolComplete);
               return;
             }
-            setActivityStatus("正在思考理解…");
+            setActivityStatus(label);
+          } else if (status === "reasoning") {
+            if (!hasRunningTool) {
+              if (completionVisible) {
+                setTimeout(() => {
+                  const s = useChatStore.getState();
+                  if (!s.toolCalls.some(tc => !tc.result) && s.activityStatus.endsWith("完成")) {
+                    setActivityStatus("正在理解问题…");
+                  }
+                }, 1200 - sinceToolComplete);
+                return;
+              }
+              setActivityStatus("正在理解问题…");
+            }
+          } else if (status === "tool_result") {
+            // Brief "获取结果中…" then back to thinking
+            setActivityStatus("获取结果中…");
+            setTimeout(() => {
+              const s = useChatStore.getState();
+              if (s.activityStatus === "获取结果中…") {
+                if (s.toolCalls.some(tc => !tc.result)) return;
+                setActivityStatus("正在思考理解…");
+              }
+            }, 1500);
           } else if (status === "complete") {
             setActivityStatus("");
           } else {
@@ -1607,6 +1742,11 @@ function ChatDetailScreenInner() {
   const renderItem = ({ item }: { item: ChatMessage }) => {
     if (!item || !item.id) return null;
     if (item.role === 'assistant' && (!item.content || !item.content.trim())) return null;
+    // Filter out stale empty/partial AI messages from failed requests (only whitespace, newlines, or emoji)
+    if (item.role === 'assistant') {
+      const _clean = (item.content || '').replace(/[\s\u00a0\u200b\ufeff]/g, '').replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE0F}\u{200D}]/gu, '');
+      if (_clean.length === 0) return null;
+    }
     const isFailed = failedMessages.has(item.id);
     
     // Check if this message has an active video task
@@ -1656,29 +1796,31 @@ function ChatDetailScreenInner() {
   const renderFooter = () => {
     if (!isStreaming) return null;
 
-    // Case 1: Generating media - show generation placeholder with animation
-    if (generatingType) {
-      return (
-        <View style={{ paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm }}>
-          <View style={styles.genPlaceholderRow}>
-            <View style={[styles.genAvatar, { backgroundColor: Colors.primary }]}>
-              <Ionicons name="sparkles" size={14} color="#fff" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <GenerationPlaceholder type={generatingType} />
-            </View>
-          </View>
-        </View>
-      );
-    }
+    // 实时任务状态卡片：思考理解 → 正在生成图片/视频/搜索… → 正在输入回复
+    // 紧跟最后一条消息展示，随后端工具事件实时切换阶段 + 计时
+    const toolSteps = toolCalls.map((tc) => ({
+      id: tc.id,
+      name: tc.name,
+      label: getToolMeta(tc.name).label,
+      done: !!tc.result,
+    }));
 
-    // Case 2: Streaming text content or tool calls active - show streaming text only
-    if (streamingContent || toolCalls.length > 0) {
-      const sanitizedStreaming = /task_id|任务ID|进度[：:\s]*\d+%|视频已生成完成|视频正在生成中|正在尝试生成视频|视频生成服务暂时不可用|关于视频链接|替代方案|状态[：:]\s*(queued|processing)/i.test(streamingContent) 
-        ? sanitizeVideoContent(streamingContent) 
-        : streamingContent;
-      if (streamingContent) {
-        return (
+    const showStatusCard = !streamingContent;
+    const sanitizedStreaming = /task_id|任务ID|进度[：:\s]*\d+%|视频已生成完成|视频正在生成中|正在尝试生成视频|视频生成服务暂时不可用|关于视频链接|替代方案|状态[：:]\s*(queued|processing)/i.test(streamingContent)
+      ? sanitizeVideoContent(streamingContent)
+      : streamingContent;
+
+    return (
+      <View>
+        {showStatusCard && (
+          <TaskStatusCard
+            status={activityStatus}
+            tools={toolSteps}
+            botName={botName}
+            isDark={isDark}
+          />
+        )}
+        {streamingContent ? (
           <View style={{ paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm }}>
             <MessageBubble
               message={{
@@ -1698,19 +1840,9 @@ function ChatDetailScreenInner() {
               isDark={isDark}
             />
           </View>
-        );
-      }
-      // Tool calls running but no text yet - just return null, TypingIndicator handles it
-      return null;
-    }
-    
-    // Show VideoGenerationOverlay during streaming if video task detected
-    const streamingVideoTask = Array.from(videoTasks.values()).find(t => 
-      t.msgId === streamingMessageId && (t.status === 'polling' || t.status === 'queued' || t.status === 'processing')
+        ) : null}
+      </View>
     );
-    // Case 3: No streaming content, no tool calls - just return null
-    // TypingIndicator handles all status display above the input box
-    return null;
   };
 
   return (
@@ -1778,12 +1910,17 @@ function ChatDetailScreenInner() {
           extraData={videoTasks}
           onScroll={handleScroll}
           onContentSizeChange={() => {
-            flatListRef.current?.scrollToEnd({ animated: false });
-            setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 80);
-            setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 250);
+            if (isNearBottomRef.current) {
+              flatListRef.current?.scrollToEnd({ animated: false });
+            }
           }}
           onLayout={() => {
-            flatListRef.current?.scrollToEnd({ animated: false });
+            if (isNearBottomRef.current) {
+              flatListRef.current?.scrollToEnd({ animated: false });
+            }
+          }}
+          onScrollBeginDrag={() => {
+            // User started scrolling manually - don't force scroll until they go back to bottom
           }}
           scrollEventThrottle={Platform.OS === 'web' ? 0 : 100}
         />
@@ -1935,7 +2072,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff', paddingTop: Platform.OS === 'web' ? 0 : 0, paddingBottom: Platform.OS === 'web' ? 0 : Spacing.sm },
   loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyArea: { flex: 1, justifyContent: 'center' },
-  listContent: { paddingVertical: Spacing.md, paddingBottom: 280 },
+  listContent: { paddingVertical: Spacing.md, paddingBottom: 120 },
   errorBar: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: '#fef2f2',
