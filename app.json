@@ -2,7 +2,7 @@
   "expo": {
     "name": "sylab",
     "slug": "sylab-app",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "scheme": "sylab",
     "userInterfaceStyle": "automatic",

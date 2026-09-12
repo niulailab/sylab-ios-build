@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import {
   View, Text, Modal, Image, ScrollView, TouchableOpacity, StyleSheet,
-  Dimensions, Platform, Pressable, ActivityIndicator,
+  Dimensions, Platform, Pressable, Linking, Alert, ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { normalizeServerUrl, downloadAndShare, openExternally } from '../utils/fileOpen';
@@ -12,7 +12,7 @@ const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
 export const ZoomableImage: React.FC<{ uri: string; children: React.ReactNode }> = ({ uri, children }) => {
   const [visible, setVisible] = useState(false);
-  const [zoomed, setZoomed] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1);
   const safeUri = normalizeServerUrl(uri);
 
   const [downloading, setDownloading] = useState(false);
@@ -28,16 +28,16 @@ export const ZoomableImage: React.FC<{ uri: string; children: React.ReactNode }>
     }
   };
 
-  // 仅双击切换 2.5x；单击不缩放（原来误绑 onPress=toggleZoom 导致单击就放大）
+  // 仅双击切换 2.5x；单击不缩放（原来误绑 onPress 导致单击就放大）
   const handleTap = () => {
     const now = Date.now();
     if (now - lastTapRef.current < 280) {
-      setZoomed(z => !z);
+      setZoomScale(s => (s > 1 ? 1 : 2.5));
     }
     lastTapRef.current = now;
   };
 
-  const close = () => { setVisible(false); setZoomed(false); lastTapRef.current = 0; };
+  const close = () => { setVisible(false); setZoomScale(1); lastTapRef.current = 0; };
 
   return (
     <>
@@ -68,15 +68,20 @@ export const ZoomableImage: React.FC<{ uri: string; children: React.ReactNode }>
             contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center' }}
             maximumZoomScale={4}
             minimumZoomScale={1}
-            zoomScale={Platform.OS === 'web' ? (zoomed ? 2.5 : 1) : undefined}
+            zoomScale={zoomScale}
             showsHorizontalScrollIndicator={false}
             showsVerticalScrollIndicator={false}
             centerContent
+            onScroll={(e: any) => {
+              const z = e?.nativeEvent?.zoomScale;
+              if (typeof z === 'number' && Math.abs(z - zoomScale) > 0.01) setZoomScale(z);
+            }}
+            scrollEventThrottle={16}
           >
-            <Pressable onPress={handleTap}>
+            <Pressable onPress={handleTap} delayPressIn={0}>
               <Image
                 source={{ uri: safeUri }}
-                style={zoomed ? lb.imageZoomed : lb.imageFit}
+                style={zoomScale > 1 ? lb.imageZoomed : lb.imageFit}
                 resizeMode="contain"
               />
             </Pressable>

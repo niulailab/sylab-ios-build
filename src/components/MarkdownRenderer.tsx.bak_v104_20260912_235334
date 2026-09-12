@@ -3,7 +3,6 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Linking, P
 // expo-video dynamically imported to prevent native crash on iOS 26
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { ZoomableImage } from './ImageLightbox';
-import { downloadAndShare, openExternally } from '../utils/fileOpen';
 
 // Fixed pixel width for horizontal table scroll (avoids flexbox circular dependency)
 const TABLE_SCROLL_W = Math.max(200, (Dimensions.get('window').width - 32) * 0.96 - 24);
@@ -137,7 +136,7 @@ function renderVideoTag(tag: string, key: string): React.ReactNode {
   if (!src) return null;
   return (
     <View key={key} style={styles.videoContainer}>
-      <TouchableOpacity style={styles.videoLink} activeOpacity={0.7} onPress={() => openExternally(src)}>
+      <TouchableOpacity style={styles.videoLink} activeOpacity={0.7} onPress={() => Linking.openURL(src)}>
         <Text style={{ color: '#fff', fontSize: FontSize.sm }}>▶</Text>
         <Text style={styles.videoLinkText}>点击播放视频</Text>
         <Text style={{ color: '#94a3b8', fontSize: 11, flex: 1, marginLeft: 8 }} numberOfLines={1}>{src.substring(0, 60)}...</Text>
@@ -215,7 +214,7 @@ function simpleMdToElements(md: string, isDark: boolean): React.ReactNode[] {
         parts.push(<Text key={`${key}-c${k}`} style={{ color: '#e11d48', backgroundColor: cb, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, fontSize: 13 }}>{first.m[1]}</Text>);
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
-        parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { const u=first.m[2]; if (pickFileInfo(u)) { downloadAndShare(u); } else { openExternally(u); } }}>{first.m[1]}</Text>);
+        parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => Linking.openURL(first.m[2]).catch(() => {})}>{first.m[1]}</Text>);
         remaining = remaining.slice(first.idx + first.m[0].length);
       }
       k++;
@@ -303,7 +302,7 @@ function FileDownloadCard({ url }: { url: string }) {
   if (!fi) return null;
   const [mdUrl, setMdUrl] = React.useState<string | null>(null);
   const open = () => {
-    if (fi.ext === '.md') { setMdUrl(url); } else { downloadAndShare(url); }
+    if (fi.ext === '.md') { setMdUrl(url); } else { Linking.openURL(url).catch(() => {}); }
   };
   return (
     <>
@@ -341,15 +340,10 @@ function renderLinkedText(text: string, keyBase: string, isDark: boolean, onMdLi
         <Text key={`${keyBase}-l${k}`} style={{ color: linkColor, textDecorationLine: 'underline' }}
           onPress={() => { onMdLink(url); }}>{label}</Text>
       );
-    } else if (pickFileInfo(url)) {
-      nodes.push(
-        <Text key={`${keyBase}-l${k}`} style={{ color: linkColor, textDecorationLine: 'underline' }}
-          onPress={() => { downloadAndShare(url); }}>{label}</Text>
-      );
     } else {
       nodes.push(
         <Text key={`${keyBase}-l${k}`} style={{ color: linkColor, textDecorationLine: 'underline' }}
-          onPress={() => { openExternally(url); }}>{label}</Text>
+          onPress={() => { Linking.openURL(url).catch(() => {}); }}>{label}</Text>
       );
     }
     last = mm.index + mm[0].length; k++;
@@ -488,7 +482,7 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
       <View style={{ flexDirection: 'row', backgroundColor: headerBg, borderBottomWidth: 1, borderBottomColor: borderColor }}>
         {headers.map((cell, ci) => (
           <View key={`th-${ci}`} style={cellStyle(ci, true)}>
-            <Text selectable style={{ fontSize: FontSize.sm, fontWeight: '700', color: textColor, flexWrap: 'wrap', width: '100%' }}>{renderInline(cell, `th-${ci}`)}</Text>
+            <Text style={{ fontSize: FontSize.sm, fontWeight: '700', color: textColor, flexWrap: 'wrap', width: '100%' }}>{renderInline(cell, `th-${ci}`)}</Text>
           </View>
         ))}
       </View>
@@ -496,7 +490,7 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
         <View key={`tr-${ri}`} style={{ flexDirection: 'row', borderBottomWidth: ri < dataRows.length - 1 ? 0.5 : 0, borderBottomColor: borderColor }}>
           {row.map((cell, ci) => (
             <View key={`td-${ri}-${ci}`} style={cellStyle(ci, false)}>
-              <Text selectable style={{ fontSize: FontSize.sm, color: textColor, flexWrap: 'wrap', width: '100%' }}>{renderInline(cell, `td-${ri}-${ci}`)}</Text>
+              <Text style={{ fontSize: FontSize.sm, color: textColor, flexWrap: 'wrap', width: '100%' }}>{renderInline(cell, `td-${ri}-${ci}`)}</Text>
             </View>
           ))}
         </View>
@@ -577,7 +571,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
               if (ip.startsWith('*') && ip.endsWith('*')) {
                 return <Text key={`${key}-i-${j}-${k}`} style={{ fontStyle: 'italic' }}>{ip.slice(1, -1)}</Text>;
               }
-              return <Text key={`${key}-t-${j}-${k}`} selectable>{ip}</Text>;
+              return <Text key={`${key}-t-${j}-${k}`}>{ip}</Text>;
             });
           }
           return <React.Fragment key={`${key}-t-${j}`}>{renderLinkedText(bp, `${key}-lk-${j}`, !!isDark, setMdPreviewUrl)}</React.Fragment>;
@@ -639,17 +633,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
 
     // Headings
     if (line.startsWith('### ')) {
-      elements.push(<Text key={`h3-${i}`} selectable style={[styles.h3, { color: textColor }]}>{renderInline(line.slice(4), `h3-${i}`)}</Text>);
+      elements.push(<Text key={`h3-${i}`} style={[styles.h3, { color: textColor }]}>{renderInline(line.slice(4), `h3-${i}`)}</Text>);
     } else if (line.startsWith('## ')) {
-      elements.push(<Text key={`h2-${i}`} selectable style={[styles.h2, { color: textColor }]}>{renderInline(line.slice(3), `h2-${i}`)}</Text>);
+      elements.push(<Text key={`h2-${i}`} style={[styles.h2, { color: textColor }]}>{renderInline(line.slice(3), `h2-${i}`)}</Text>);
     } else if (line.startsWith('# ')) {
-      elements.push(<Text key={`h1-${i}`} selectable style={[styles.h1, { color: textColor }]}>{renderInline(line.slice(2), `h1-${i}`)}</Text>);
+      elements.push(<Text key={`h1-${i}`} style={[styles.h1, { color: textColor }]}>{renderInline(line.slice(2), `h1-${i}`)}</Text>);
     }
     // Blockquote
     else if (line.startsWith('> ')) {
       elements.push(
         <View key={`q-${i}`} style={[styles.quote, { borderLeftColor: Colors.primary }]}>
-          <Text selectable style={[styles.quoteText, { color: isDark ? '#999' : Colors.textSecondary }]}>{renderInline(line.slice(2), `q-${i}`)}</Text>
+          <Text style={[styles.quoteText, { color: isDark ? '#999' : Colors.textSecondary }]}>{renderInline(line.slice(2), `q-${i}`)}</Text>
         </View>
       );
     }
@@ -659,7 +653,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
       elements.push(
         <View key={`li-${i}`} style={styles.listItem}>
           <Text style={{ color: textColor, fontSize: FontSize.md, width: 16 }}>•</Text>
-          <Text selectable style={{ color: textColor, fontSize: FontSize.md, flex: 1 }}>{renderInline(line.slice(2), `li-${i}`)}</Text>
+          <Text style={{ color: textColor, fontSize: FontSize.md, flex: 1 }}>{renderInline(line.slice(2), `li-${i}`)}</Text>
         </View>
       );
     }
@@ -670,7 +664,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         elements.push(
           <View key={`ol-${i}`} style={styles.listItem}>
             <Text style={{ color: Colors.primary, fontSize: FontSize.md, fontWeight: '600', width: 24 }}>{match[1]}.</Text>
-            <Text selectable style={{ color: textColor, fontSize: FontSize.md, flex: 1 }}>{renderInline(match[2], `ol-${i}`)}</Text>
+            <Text style={{ color: textColor, fontSize: FontSize.md, flex: 1 }}>{renderInline(match[2], `ol-${i}`)}</Text>
           </View>
         );
       }
@@ -726,7 +720,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
             </View>
           );
         } else {
-          elements.push(<Text key={`p-${i}`} selectable style={[styles.paragraph, { color: textColor }]}>{renderInline(line, `p-${i}`)}</Text>);
+          elements.push(<Text key={`p-${i}`} style={[styles.paragraph, { color: textColor }]}>{renderInline(line, `p-${i}`)}</Text>);
         }
       }
     }
