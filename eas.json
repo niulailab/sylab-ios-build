@@ -3,10 +3,6 @@
     "version": ">= 14.0.0"
   },
   "build": {
-    "development": {
-      "developmentClient": true,
-      "distribution": "internal"
-    },
     "preview": {
       "distribution": "internal",
       "ios": {
@@ -17,11 +13,11 @@
         "buildType": "apk"
       }
     },
-    "production": {
-      "autoIncrement": true
+    "unsigned-ios": {
+      "ios": {
+        "simulator": false,
+        "signing": false
+      }
     }
-  },
-  "submit": {
-    "production": {}
   }
 }
