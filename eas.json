@@ -12,12 +12,6 @@
       "android": {
         "buildType": "apk"
       }
-    },
-    "unsigned-ios": {
-      "ios": {
-        "simulator": false,
-        "signing": false
-      }
     }
   }
 }
