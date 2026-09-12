@@ -651,13 +651,21 @@ function ChatDetailScreenInner() {
         const cur = useChatStore.getState().messages;
         // [FIX 消息消失] 本地已渲染的 AI 回复不再被后台轮询丢弃（后端瞬时未落库时本地是唯一副本）
         const dedup = _mergeWithServerMsgs(cur, msgs);
-        // 指纹集合对比：有新增播报 或 服务端删掉了内部气泡，都同步
+        // [FIX 10秒跳动] 后台轮询是稳态高频操作：仅当“可见消息的稳定身份集合”真的新增/删除时才替换数组。
+        // 同一批消息的属性(时间戳/字段)刷新不触发 setMessages，避免 FlatList 全量重渲染+Markdown重排导致列表周期性跳动。
         const visCur = cur.filter(_isVisibleMsg);
-        const curKeys = new Set(visCur.map(_mkey));
-        const newKeys = new Set(dedup.map(_mkey));
-        let changed = dedup.length !== visCur.length;
-        if (!changed) { for (const k of newKeys) { if (!curKeys.has(k)) { changed = true; break; } } }
-        if (!changed) { for (const k of curKeys) { if (!newKeys.has(k)) { changed = true; break; } } }
+        const _idSet = (arr: any[]) => {
+          const ids = new Set<string>();
+          for (const m of arr) { if (m && m.id != null) ids.add('id:' + m.id); }
+          // 无 id 的本地临时消息退化为内容指纹
+          for (const m of arr) { if (m && (m.id == null)) ids.add('fp:' + _mkey(m)); }
+          return ids;
+        };
+        const curIds = _idSet(visCur);
+        const newIds = _idSet(dedup);
+        let changed = curIds.size !== newIds.size;
+        if (!changed) { for (const k of newIds) { if (!curIds.has(k)) { changed = true; break; } } }
+        if (!changed) { for (const k of curIds) { if (!newIds.has(k)) { changed = true; break; } } }
         if (changed) { useChatStore.getState().setMessages(dedup); }
       } catch (e) {
         try { console.warn('[POLL] tick failed:', e && (e as any).message || e); } catch (_) {}
