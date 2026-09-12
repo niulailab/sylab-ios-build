@@ -88,7 +88,7 @@ export function sendMessageStream(
       xhr.open('POST', url, true);
       for (const k in headers) xhr.setRequestHeader(k, headers[k]);
       xhr.responseType = 'text';
-      xhr.timeout = 300000;
+      xhr.timeout = 0; // 无总时长上限，超大任务可跑任意久；靠 idle watchdog(300s无数据)判卡死，服务端15s心跳保活
 
       let buffer = '';
       let currentEvent = '';
