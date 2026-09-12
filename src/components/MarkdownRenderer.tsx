@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Linking, P
 // expo-video dynamically imported to prevent native crash on iOS 26
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { ZoomableImage } from './ImageLightbox';
-import { downloadAndShare, openExternally } from '../utils/fileOpen';
+import { downloadAndShare, openExternally, previewFile, fetchFileSize, formatFileSize } from '../utils/fileOpen';
 
 // Fixed pixel width for horizontal table scroll (avoids flexbox circular dependency)
 const TABLE_SCROLL_W = Math.max(200, (Dimensions.get('window').width - 32) * 0.96 - 24);
@@ -300,27 +300,88 @@ function MarkdownPreviewModal({ url, onClose }: { url: string; onClose: () => vo
 
 function FileDownloadCard({ url }: { url: string }) {
   const fi = pickFileInfo(url);
-  if (!fi) return null;
   const [mdUrl, setMdUrl] = React.useState<string | null>(null);
-  const open = () => {
-    if (fi.ext === '.md') { setMdUrl(url); } else { downloadAndShare(url); }
+  const [size, setSize] = React.useState<number | null>(null);
+  const [downloading, setDownloading] = React.useState(false);
+  const [progress, setProgress] = React.useState(0);
+
+  React.useEffect(() => {
+    let alive = true;
+    if (fi) fetchFileSize(url).then((n) => { if (alive) setSize(n); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url]);
+
+  if (!fi) return null;
+
+  const onPreview = () => {
+    if (fi.ext === '.md') { setMdUrl(url); return; }
+    // 原生包走 QuickLook/系统预览器；纯 JS 包自动兜底为下载+分享面板
+    previewFile(url);
   };
+
+  const onDownload = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setProgress(0);
+    try {
+      await downloadAndShare(url, (r) => setProgress(r));
+    } finally {
+      // 分享面板关闭后稍作延时复位，避免进度条瞬间闪烁
+      setTimeout(() => { setDownloading(false); setProgress(0); }, 400);
+    }
+  };
+
+  const sizeText = size != null ? formatFileSize(size) : '';
+
   return (
     <>
-    <TouchableOpacity activeOpacity={0.7} onPress={open}
-      style={{ flexDirection: 'row', alignItems: 'center', marginVertical: 6,
-        backgroundColor: '#f4f6fb', borderWidth: 1, borderColor: '#e3e8f2',
-        borderRadius: 12, padding: 12 }}>
-      <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: fi.info.color,
-        alignItems: 'center', justifyContent: 'center', marginRight: 12 }}>
-        <Text style={{ fontSize: 20 }}>{fi.info.icon}</Text>
+    <View style={{ marginVertical: 6, backgroundColor: '#f4f6fb',
+        borderWidth: 1, borderColor: '#e3e8f2', borderRadius: 12, padding: 12 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: fi.info.color,
+          alignItems: 'center', justifyContent: 'center', marginRight: 12 }}>
+          <Text style={{ fontSize: 20 }}>{fi.info.icon}</Text>
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '600', color: '#1f2937' }}>{fi.name}</Text>
+          <Text style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }} numberOfLines={1}>
+            {fi.info.label}{sizeText ? ' · ' + sizeText : ''}
+          </Text>
+        </View>
       </View>
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: '600', color: '#1f2937' }}>{fi.name}</Text>
-        <Text style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{fi.info.label} 文档 · 点击下载</Text>
-      </View>
-      <Text style={{ fontSize: 18, color: fi.info.color, marginLeft: 8 }}>⬇</Text>
-    </TouchableOpacity>
+      {downloading ? (
+        <View style={{ marginTop: 10 }}>
+          <View style={{ height: 5, borderRadius: 3, backgroundColor: '#e2e8f0', overflow: 'hidden' }}>
+            <View style={{ height: 5, borderRadius: 3, backgroundColor: fi.info.color,
+              width: `${Math.round(progress * 100)}%` }} />
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 8 }}>
+            <ActivityIndicator size="small" color={fi.info.color} style={{ marginRight: 6 }} />
+            <Text style={{ fontSize: 12, color: '#64748b' }}>
+              {progress >= 1 ? '正在打开…' : `下载中 ${Math.round(progress * 100)}%`}
+            </Text>
+          </View>
+        </View>
+      ) : (
+        <View style={{ flexDirection: 'row', marginTop: 10 }}>
+          <TouchableOpacity activeOpacity={0.7} onPress={onPreview}
+            style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+              paddingVertical: 8, borderRadius: 8, backgroundColor: fi.info.color, marginRight: 8 }}>
+            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600' }}>
+              {fi.ext === '.md' ? '阅读' : '预览'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity activeOpacity={0.7} onPress={onDownload}
+            style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+              paddingVertical: 8, borderRadius: 8, backgroundColor: '#fff',
+              borderWidth: 1, borderColor: fi.info.color }}>
+            <Text style={{ fontSize: 18, color: fi.info.color, marginRight: 4 }}>⬇</Text>
+            <Text style={{ color: fi.info.color, fontSize: 13, fontWeight: '600' }}>下载</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
     {mdUrl ? <MarkdownPreviewModal url={mdUrl} onClose={() => setMdUrl(null)} /> : null}
     </>
   );

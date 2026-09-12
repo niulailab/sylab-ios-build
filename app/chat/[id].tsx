@@ -470,6 +470,26 @@ function ChatDetailScreenInner() {
     requestFollow();
   };
 
+  // [v105 滚动修复] 流式内容持续长高时的“平滑贴底”：RAF 合并之外再加 ~120ms 节流，
+  // 高频 SSE 碎片不会每帧抢滚动位；末尾用 trailing 定时器保证最后一段一定贴到底。
+  // 仍然严格遵守粘滞锁：用户上翻阅读期间一次都不跟。
+  const lastFollowTsRef = useRef(0);
+  const followTrailingRef = useRef<any>(null);
+  const requestFollowStream = () => {
+    if (userScrollingRef.current || !isNearBottomRef.current) return;
+    const now = Date.now();
+    if (now - lastFollowTsRef.current >= 120) {
+      lastFollowTsRef.current = now;
+      requestFollow();
+    } else if (!followTrailingRef.current) {
+      followTrailingRef.current = setTimeout(() => {
+        followTrailingRef.current = null;
+        lastFollowTsRef.current = Date.now();
+        if (!userScrollingRef.current && isNearBottomRef.current) requestFollow();
+      }, 130);
+    }
+  };
+
   const { user, patToken, isRestoring } = useAuthStore();
   const userName = (() => {
     const n = user?.name || '';
@@ -753,13 +773,25 @@ function ChatDetailScreenInner() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const insets = useSafeAreaInsets();
   useEffect(() => {
+    const onKbWillShow = (e: any) => {
+      // 键盘即将弹起：跟随态提前贴底，避免 FlatList 被键盘顶起时可视区停在旧位置
+      if (!userScrollingRef.current && isNearBottomRef.current) {
+        requestAnimationFrame(() => requestFollow({ force: false }));
+      }
+      if (e && e.endCoordinates) setKeyboardHeight(e.endCoordinates.height);
+    };
     const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
       setKeyboardHeight(e.endCoordinates.height);
+      // Android 没有 keyboardWillShow：didShow 时补一次贴底
+      if (Platform.OS !== 'ios' && !userScrollingRef.current && isNearBottomRef.current) {
+        requestAnimationFrame(() => requestFollow({ force: false }));
+      }
     });
+    const willShowSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardWillShow' as any, onKbWillShow as any) : null;
     const hideSub = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardHeight(0);
     });
-    return () => { showSub.remove(); hideSub.remove(); };
+    return () => { showSub.remove(); hideSub.remove(); if (willShowSub) willShowSub.remove(); };
   }, []);
 
 
@@ -1572,8 +1604,11 @@ function ChatDetailScreenInner() {
           extraData={videoTasks}
           onScroll={handleScroll}
           onContentSizeChange={() => {
-            // [FIX2 抖动] 流式打字内容长高时【不主动滚】——footer 在底部自然撑高，
-            // 反复 scrollToEnd 会和滚动位打架产生上下抖。跟随态的贴底由 messages 变化/进入流式时的 requestFollow 负责。
+            // [v105] 流式打字内容长高时：跟随态下平滑贴底（节流+尾部补偿，不与滚动位打架）；
+            // 用户上翻锁定期间完全不动。图片固定 220 高占位，历史图片加载也不会误触发跳动。
+            if (isStreaming) {
+              requestFollowStream();
+            }
           }}
           onLayout={() => {
             // [FIX2 抖动] 仅首屏还没定位过时滚一次底；之后键盘弹起/旋转/布局变化一律不碰滚动位置。
@@ -1623,7 +1658,7 @@ function ChatDetailScreenInner() {
           style={{
             position: 'absolute',
             right: 16,
-            bottom: 80,
+            bottom: 80 + keyboardHeight,
             width: 40,
             height: 40,
             borderRadius: 20,

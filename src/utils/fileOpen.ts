@@ -41,6 +41,29 @@ function fileMeta(url: string) {
   return { ext, name, info: (MIME_MAP[ext] || { mime: 'application/octet-stream', uti: 'public.data' }) };
 }
 
+export function formatFileSize(bytes?: number | null): string {
+  if (bytes == null || isNaN(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1).replace(/\.0$/, '') + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '') + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+// HEAD 请求拿文件大小（nginx 支持 content-length）；失败静默返回 null，不阻塞 UI
+export async function fetchFileSize(rawUrl: string): Promise<number | null> {
+  const url = normalizeServerUrl(rawUrl);
+  if (Platform.OS === 'web') return null;
+  try {
+    const res = await fetch(url, { method: 'HEAD' });
+    const len = res.headers.get('Content-Length') || res.headers.get('content-length');
+    if (len) {
+      const n = parseInt(len, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+  } catch {}
+  return null;
+}
+
 // 普通网页链接：才跳外部浏览器
 export function openExternally(url: string) {
   return Linking.openURL(normalizeServerUrl(url)).catch(() => {});
@@ -48,7 +71,11 @@ export function openExternally(url: string) {
 
 // 文件/图片：App 内下载后直接弹系统分享/保存面板，不跳浏览器。
 // 使用 RN 内置 Share（iOS 换壳基线无 expo-sharing 原生模块，require 会致命崩溃）。
-export async function downloadAndShare(rawUrl: string): Promise<void> {
+// onProgress: 0~1 下载进度回调（可选）。
+export async function downloadAndShare(
+  rawUrl: string,
+  onProgress?: (ratio: number) => void
+): Promise<void> {
   const url = normalizeServerUrl(rawUrl);
   if (Platform.OS === 'web') {
     try { window.open(url, '_blank'); } catch {}
@@ -58,7 +85,26 @@ export async function downloadAndShare(rawUrl: string): Promise<void> {
   const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
   const target = FileSystem.cacheDirectory + safeName;
   try {
-    const { uri } = await FileSystem.downloadAsync(url, target);
+    let lastEmit = 0;
+    const downloadResumable = FileSystem.createDownloadResumable(
+      url,
+      target,
+      {},
+      (dp) => {
+        if (!onProgress) return;
+        const total = dp.totalBytesExpectedToWrite || 0;
+        const ratio = total > 0 ? Math.min(1, dp.totalBytesWritten / total) : 0;
+        const now = Date.now();
+        // 节流：进度变化 >3% 或间隔 >200ms 才回调，避免高频 setState 抖动
+        if (ratio - lastEmit > 0.03 || now - lastEmit > 200 || ratio >= 1) {
+          lastEmit = ratio;
+          onProgress(ratio);
+        }
+      }
+    );
+    const result = await downloadResumable.downloadAsync();
+    const uri = (result as any)?.uri || target;
+    onProgress?.(1);
     try {
       if (Platform.OS === 'ios') {
         await Share.share({ url: uri, filename: safeName } as any);
@@ -85,4 +131,49 @@ export async function downloadAndShare(rawUrl: string): Promise<void> {
     console.warn('[fileOpen] download/share failed:', msg);
     Alert.alert('下载失败', '文件下载失败，请检查网络后重试。');
   }
+}
+
+// App 内预览（QuickLook / FileProvider）。
+// v105 第一批（纯 JS 换壳）：原生模块未接入前，下载后直接交给系统分享面板，
+// 用户可在面板里选"存储到文件/用 WPS·Pages 打开"，功能不缺失。
+// 接入 react-native-file-viewer（原生编译包）后，此函数自动切换为 App 内 QuickLook 预览。
+let _nativeViewer: { open: (path: string, mime?: string) => Promise<void> } | null | undefined;
+function tryGetNativeViewer() {
+  if (_nativeViewer !== undefined) return _nativeViewer;
+  try {
+    // 原生模块存在（原生编译包）时启用；换壳包 require 失败则走分享兜底
+    const RNFileViewer = require('react-native-file-viewer').default;
+    _nativeViewer = {
+      open: (path: string) =>
+        RNFileViewer.open(path, {
+          showOpenWithDialog: false,
+          displayName: fileMeta(path).name,
+        }),
+    };
+  } catch {
+    _nativeViewer = null;
+  }
+  return _nativeViewer;
+}
+
+export async function previewFile(rawUrl: string): Promise<void> {
+  const url = normalizeServerUrl(rawUrl);
+  if (Platform.OS === 'web') { openExternally(url); return; }
+  const viewer = tryGetNativeViewer();
+  if (viewer) {
+    // 原生 QuickLook 路径：下载到缓存再用系统预览器打开（不弹分享面板）
+    const { name } = fileMeta(url);
+    const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
+    const target = FileSystem.cacheDirectory + 'preview_' + safeName;
+    try {
+      const { uri } = await FileSystem.downloadAsync(url, target);
+      await viewer.open(uri);
+      return;
+    } catch (e: any) {
+      if (e && /dismiss|cancel/i.test(String(e.message || ''))) return;
+      console.warn('[fileOpen] native preview failed, fallback share:', e?.message);
+    }
+  }
+  // 兜底：下载 + 系统分享/打开面板
+  await downloadAndShare(rawUrl);
 }
