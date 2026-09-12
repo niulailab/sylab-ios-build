@@ -1,0 +1,74 @@
+{
+  "expo": {
+    "name": "sylab",
+    "slug": "sylab-app",
+    "version": "1.5.0",
+    "orientation": "portrait",
+    "scheme": "sylab",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sylab.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "允许访问相机以拍摄照片",
+        "NSPhotoLibraryUsageDescription": "允许访问照片以上传文件",
+        "NSMicrophoneUsageDescription": "允许使用麦克风进行语音输入",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsArbitraryLoadsInWebContent": true
+        }
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#6030ff"
+      },
+      "package": "com.sylab.app",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "允许访问照片以上传文件",
+          "cameraPermission": "允许拍摄照片"
+        }
+      ],
+      [
+        "expo-document-picker",
+        {
+          "iCloudContainerEnvironment": "Production"
+        }
+      ],
+      "expo-video"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d96bf15e-fb28-4efa-bad6-3449a5f8e0b7"
+      },
+      "router": {
+        "origin": false
+      },
+      "EXPO_PUBLIC_API_BASE": "https://s.symsgf.xyz",
+      "EXPO_PUBLIC_OPEN_API_BASE": "https://s.symsgf.xyz",
+      "EXPO_PUBLIC_ENABLE_API_LOG": "true"
+    },
+    "owner": "ahuaj"
+  }
+}

@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Alert, Modal, TextInput } from "react-native";
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Alert, Modal, TextInput, Platform, Linking } from "react-native";
 import { SafeAlert } from "../src/utils/safeAlert";
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../src/store/auth';
 import { creditsApi } from '../src/api/credits';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../src/constants/theme';
@@ -19,6 +20,8 @@ interface Transaction {
 
 export default function CreditsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ paid?: string }>();
   const { user } = useAuthStore();
   const [balance, setBalance] = useState(0);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -30,10 +33,13 @@ export default function CreditsScreen() {
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  // 充值
+  // 在线充值
   const [showRechargeModal, setShowRechargeModal] = useState(false);
-  const [rechargeAmount, setRechargeAmount] = useState('');
-  const [recharging, setRecharging] = useState(false);
+  const [plans, setPlans] = useState<Array<{ id: string; money: string; credits: string; label: string }>>([]);
+  const [selectedPlan, setSelectedPlan] = useState<string>('');
+  const [payType, setPayType] = useState<'alipay' | 'wxpay'>('alipay');
+  const [paying, setPaying] = useState(false);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 卡密兑换
   const [showRedeemModal, setShowRedeemModal] = useState(false);
@@ -71,6 +77,84 @@ export default function CreditsScreen() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // 加载充值套餐
+  const fetchPlans = useCallback(async () => {
+    try {
+      const res = await creditsApi.getPayPlans();
+      setPlans(res.plans || []);
+      if ((res.plans || []).length > 0) setSelectedPlan(res.plans[0].id);
+    } catch (e) {
+      console.error('load plans failed', e);
+    }
+  }, []);
+
+  const openRecharge = () => {
+    setShowRechargeModal(true);
+    if (plans.length === 0) fetchPlans();
+  };
+
+  // 支付到账后轮询
+  const startPolling = useCallback((outTradeNo: string) => {
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    let tries = 0;
+    const maxTries = 40; // 约 2 分钟
+    pollTimerRef.current = setInterval(async () => {
+      tries += 1;
+      try {
+        const r = await creditsApi.getPayStatus(outTradeNo);
+        if (r.paid) {
+          if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
+          setShowRechargeModal(false);
+          setPaying(false);
+          SafeAlert.alert('充值成功', '积分已到账，感谢支持！');
+          fetchData();
+        }
+      } catch (e) { /* 忽略单次轮询失败 */ }
+      if (tries >= maxTries) {
+        if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
+        setPaying(false);
+      }
+    }, 3000);
+  }, [fetchData]);
+
+  useEffect(() => {
+    return () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current); };
+  }, []);
+
+  // 从支付页返回（return_url 带 paid=1）提示并刷新
+  useEffect(() => {
+    if (params.paid === '1') {
+      fetchData();
+      SafeAlert.alert('支付完成', '如积分未立即到账，请稍候，支付确认后会自动入账。');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.paid]);
+
+  const handlePay = async () => {
+    if (!selectedPlan) { SafeAlert.alert('提示', '请选择充值套餐'); return; }
+    if (!user?.id) return;
+    setPaying(true);
+    try {
+      const res = await creditsApi.createPay(user.id, selectedPlan, payType);
+      if (res.pay_url) {
+        // 打开支付页（web 新标签；原生用 Linking 拉起）
+        if (Platform.OS === 'web') {
+          window.open(res.pay_url, '_blank');
+        } else {
+          await Linking.openURL(res.pay_url);
+        }
+        startPolling(res.out_trade_no);
+        SafeAlert.alert('请完成支付', '已打开支付页面，完成付款后积分将自动到账。');
+      } else {
+        SafeAlert.alert('下单失败', res.message || '请稍后重试');
+        setPaying(false);
+      }
+    } catch (error: any) {
+      SafeAlert.alert('下单失败', error.response?.data?.detail || error.message || '网络错误');
+      setPaying(false);
+    }
+  };
+
   const loadMore = async () => {
     if (!hasMore || loadingMore || !user?.id) return;
     setLoadingMore(true);
@@ -100,14 +184,27 @@ export default function CreditsScreen() {
   const formatTime = (ts: string) => {
     if (!ts) return '';
     try {
-      const d = new Date(typeof ts === 'number' ? ts * 1000 : ts);
+      let d: Date;
+      if (typeof ts === 'number') {
+        // 秒级时间戳按 UTC 处理
+        d = new Date(ts * 1000);
+      } else {
+        let s = String(ts).trim();
+        // 后端返回的是 UTC 时间（MySQL 容器时区为 UTC），格式 "YYYY-MM-DD HH:MM:SS"
+        // 不带时区标识时需手动补 Z 按 UTC 解析，再由 toLocaleString 转本地时区
+        if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+          s = s.replace(' ', 'T') + 'Z';
+        }
+        d = new Date(s);
+        if (isNaN(d.getTime())) d = new Date(ts);
+      }
       return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
     } catch { return String(ts); }
   };
 
   const getActionLabel = (type: string) => {
     const map: Record<string, string> = {
-      chat: '对话', workflow_run: '工作流', api_call: 'API调用',
+      chat: '对话', consume: '积分消耗', workflow_run: '工作流', api_call: 'API调用',
       knowledge: '知识库', token_consumption: 'Token消耗', recharge: '充值',
       refund: '退款', adjustment: '调整', admin_adjust: '管理员调整', gift: '赠送', redeem: '卡密兑换',
       image_gen: '生图', video_gen: '生视频',
@@ -122,31 +219,6 @@ export default function CreditsScreen() {
     if (type === 'image_gen') return 'image-outline';
     if (type === 'video_gen') return 'videocam-outline';
     return 'chatbubble-ellipses-outline';
-  };
-
-  const handleRecharge = async () => {
-    const amount = parseInt(rechargeAmount);
-    if (!amount || amount <= 0) {
-      SafeAlert.alert('提示', '请输入有效的充值金额');
-      return;
-    }
-    if (!user?.id) return;
-    setRecharging(true);
-    try {
-      const result = await creditsApi.recharge(user.id, amount);
-      if (result.status === 'ok') {
-        SafeAlert.alert('充值成功', `成功充值 ${amount} 积分`);
-        setShowRechargeModal(false);
-        setRechargeAmount('');
-        fetchData();
-      } else {
-        SafeAlert.alert('充值失败', result.message || '未知错误');
-      }
-    } catch (error: any) {
-      SafeAlert.alert('充值失败', error.response?.data?.message || error.message || '网络错误');
-    } finally {
-      setRecharging(false);
-    }
   };
 
   const handleRedeem = async () => {
@@ -174,11 +246,14 @@ export default function CreditsScreen() {
   };
 
   const renderItem = ({ item }: { item: Transaction }) => {
-    const isPositive = item.amount > 0;
+    // 后端 amount 对所有类型都存正数，消耗类按负数展示
+    const isDeduct = ['consume', 'chat', 'token_consumption', 'workflow_run', 'api_call', 'knowledge', 'image_gen', 'video_gen'].includes(item.action_type);
+    const signed = isDeduct ? -Math.abs(item.amount) : Math.abs(item.amount);
+    const isPositive = signed > 0;
     return (
       <View style={styles.transCard}>
-        <View style={[styles.transIconWrap, { backgroundColor: isPositive ? 'rgba(16,185,129,0.1)' : 'rgba(96,48,255,0.08)' }]}>
-          <Ionicons name={getActionIcon(item.action_type) as any} size={18} color={isPositive ? '#10b981' : Colors.primary} />
+        <View style={[styles.transIconWrap, { backgroundColor: isPositive ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.08)' }]}>
+          <Ionicons name={getActionIcon(item.action_type) as any} size={18} color={isPositive ? '#10b981' : '#ef4444'} />
         </View>
         <View style={styles.transContent}>
           <Text style={styles.transType}>{getActionLabel(item.action_type)}</Text>
@@ -187,7 +262,7 @@ export default function CreditsScreen() {
         </View>
         <View style={styles.transAmountWrap}>
           <Text style={[styles.transAmount, { color: isPositive ? '#10b981' : Colors.danger }]}>
-            {isPositive ? '+' : ''}{item.amount}
+            {isPositive ? '+' : ''}{signed}
           </Text>
           {item.balance_after !== undefined && (
             <Text style={styles.transBalance}>余额 {item.balance_after}</Text>
@@ -205,21 +280,18 @@ export default function CreditsScreen() {
     );
   }
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={22} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>积分明细</Text>
-        <View style={{ width: 36 }} />
-      </View>
-
+  // 列表头部：余额卡 + 账户概览（卡密定价已挪入充值弹窗，让交易明细占满主区域）
+  const renderListHeader = () => (
+    <View>
       <LinearGradient colors={[Colors.gradientStart, Colors.gradientEnd]} style={styles.balanceCard}>
         <Text style={styles.balanceLabel}>当前积分余额</Text>
         <Text style={styles.balanceValue}>{balance}</Text>
         <View style={styles.balanceDivider} />
         <View style={styles.actionRow}>
+          <TouchableOpacity style={[styles.actionBtn, styles.actionBtnPrimary]} onPress={openRecharge}>
+            <Ionicons name="wallet-outline" size={18} color={Colors.primary} />
+            <Text style={[styles.actionBtnText, { color: Colors.primary }]}>在线充值</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.actionBtn} onPress={() => setShowRedeemModal(true)}>
             <Ionicons name="card-outline" size={18} color="#fff" />
             <Text style={styles.actionBtnText}>卡密兑换</Text>
@@ -251,41 +323,44 @@ export default function CreditsScreen() {
         </View>
       </View>
 
-      {/* 卡密定价 */}
-      <View style={styles.pricingCard}>
-        <Text style={styles.pricingTitle}>卡密定价</Text>
-        <View style={styles.pricingGrid}>
-          {[
-            { price: '10', credits: '10,000' },
-            { price: '20', credits: '20,000' },
-            { price: '50', credits: '50,000' },
-            { price: '100', credits: '100,000' },
-            { price: '200', credits: '200,000' },
-          ].map((item) => (
-            <View key={item.price} style={styles.pricingItem}>
-              <Text style={styles.pricingPrice}>¥{item.price}</Text>
-              <Text style={styles.pricingCredits}>{item.credits} 积分</Text>
-            </View>
-          ))}
-        </View>
-        <Text style={styles.pricingNote}>积分有效期永久 · 100 token = 1 积分</Text>
-      </View>
-
       {/* 交易明细标题 */}
-      <View style={{ paddingHorizontal: Spacing.md, paddingTop: Spacing.sm }}>
-        <Text style={{ fontSize: FontSize.lg, fontWeight: '700', color: Colors.text }}>交易明细</Text>
+      <View style={styles.transListHeader}>
+        <Text style={styles.transListTitle}>交易明细</Text>
+      </View>
+    </View>
+  );
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color={Colors.text} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>积分明细</Text>
+        <View style={{ width: 36 }} />
       </View>
 
-      {transactions.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Ionicons name="wallet-outline" size={56} color={Colors.textTertiary} />
-          <Text style={styles.emptyText}>暂无交易记录</Text>
-        </View>
+      {transactions.length === 0 && !loading ? (
+        <FlatList
+          data={[]}
+          renderItem={() => null}
+          ListHeaderComponent={renderListHeader}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Ionicons name="wallet-outline" size={56} color={Colors.textTertiary} />
+              <Text style={styles.emptyText}>暂无交易记录</Text>
+            </View>
+          }
+          contentContainerStyle={{ paddingBottom: 40 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} />}
+          showsVerticalScrollIndicator={false}
+        />
       ) : (
         <FlatList
           data={transactions}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
+          ListHeaderComponent={renderListHeader}
           contentContainerStyle={{ paddingBottom: 40 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} />}
           onEndReached={loadMore}
@@ -295,41 +370,59 @@ export default function CreditsScreen() {
         />
       )}
 
-      {/* 充值弹窗 */}
+      {/* 在线充值弹窗 */}
       <Modal visible={showRechargeModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>充值积分</Text>
-            <Text style={styles.modalDesc}>输入充值金额（积分）</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="请输入积分数量"
-              keyboardType="number-pad"
-              value={rechargeAmount}
-              onChangeText={setRechargeAmount}
-              placeholderTextColor={Colors.textTertiary}
-            />
-            <View style={styles.quickAmountRow}>
-              {[100, 500, 1000, 5000].map(amount => (
-                <TouchableOpacity
-                  key={amount}
-                  style={[styles.quickAmountBtn, rechargeAmount === String(amount) && styles.quickAmountBtnActive]}
-                  onPress={() => setRechargeAmount(String(amount))}
-                >
-                  <Text style={[styles.quickAmountText, rechargeAmount === String(amount) && styles.quickAmountTextActive]}>
-                    {amount}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+          <View style={[styles.modalContent, { maxWidth: 380 }]}>
+            <Text style={styles.modalTitle}>在线充值</Text>
+            <Text style={styles.modalDesc}>选择套餐，支持微信 / 支付宝，1元=1000积分</Text>
+
+            {/* 套餐选择 */}
+            <View style={styles.planGrid}>
+              {plans.map((p) => {
+                const active = selectedPlan === p.id;
+                return (
+                  <TouchableOpacity
+                    key={p.id}
+                    style={[styles.planItem, active && styles.planItemActive]}
+                    onPress={() => setSelectedPlan(p.id)}
+                  >
+                    <Text style={[styles.planMoney, active && { color: '#fff' }]}>¥{p.money}</Text>
+                    <Text style={[styles.planCredits, active && { color: 'rgba(255,255,255,0.85)' }]}>
+                      {Number(p.credits).toLocaleString()} 积分
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
+
+            {/* 支付方式 */}
+            <View style={styles.payTypeRow}>
+              <TouchableOpacity
+                style={[styles.payTypeBtn, payType === 'wxpay' && styles.payTypeActiveWx]}
+                onPress={() => setPayType('wxpay')}
+              >
+                <Ionicons name="logo-wechat" size={20} color={payType === 'wxpay' ? '#fff' : '#07c160'} />
+                <Text style={[styles.payTypeText, payType === 'wxpay' && { color: '#fff' }]}>微信支付</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.payTypeBtn, payType === 'alipay' && styles.payTypeActiveAli]}
+                onPress={() => setPayType('alipay')}
+              >
+                <Ionicons name="logo-alipay" size={20} color={payType === 'alipay' ? '#fff' : '#1677ff'} />
+                <Text style={[styles.payTypeText, payType === 'alipay' && { color: '#fff' }]}>支付宝</Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.modalBtnRow}>
-              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => { setShowRechargeModal(false); setRechargeAmount(''); }}>
+              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => { setShowRechargeModal(false); setPaying(false); }}>
                 <Text style={styles.modalCancelText}>取消</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalConfirmBtn} onPress={handleRecharge} disabled={recharging}>
-                {recharging ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalConfirmText}>确认充值</Text>}
+              <TouchableOpacity style={[styles.modalConfirmBtn, paying && { opacity: 0.6 }]} onPress={handlePay} disabled={paying}>
+                {paying ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.modalConfirmText}>立即支付</Text>}
               </TouchableOpacity>
             </View>
+            <Text style={styles.payTip}>点击后跳转安全支付页面，付款成功积分自动到账</Text>
           </View>
         </View>
       </Modal>
@@ -385,6 +478,26 @@ const styles = StyleSheet.create({
     borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', gap: 6,
   },
   actionBtnText: { color: '#fff', fontSize: FontSize.sm, fontWeight: '600' },
+  actionBtnPrimary: { backgroundColor: '#fff' },
+  // 充值套餐
+  planGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
+  planItem: {
+    width: '31%', flexGrow: 1, backgroundColor: Colors.backgroundSecondary,
+    borderRadius: BorderRadius.md, paddingVertical: 12, alignItems: 'center',
+    borderWidth: 1.5, borderColor: 'transparent',
+  },
+  planItemActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  planMoney: { fontSize: FontSize.lg, fontWeight: '800', color: Colors.text },
+  planCredits: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
+  payTypeRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+  payTypeBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 12, borderRadius: BorderRadius.md, borderWidth: 1.5, borderColor: Colors.border,
+  },
+  payTypeActiveWx: { backgroundColor: '#07c160', borderColor: '#07c160' },
+  payTypeActiveAli: { backgroundColor: '#1677ff', borderColor: '#1677ff' },
+  payTypeText: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text },
+  payTip: { fontSize: FontSize.xs, color: Colors.textTertiary, textAlign: 'center', marginTop: 10 },
   transCard: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
     borderRadius: BorderRadius.lg, padding: Spacing.md,
@@ -427,6 +540,10 @@ const styles = StyleSheet.create({
   pricingPrice: { fontSize: FontSize.xl, fontWeight: '800', color: Colors.primary },
   pricingCredits: { fontSize: FontSize.xs, color: Colors.textSecondary, marginTop: 2 },
   pricingNote: { fontSize: FontSize.xs, color: Colors.textTertiary, textAlign: 'center', marginTop: Spacing.sm },
+  transListHeader: {
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.sm, paddingBottom: Spacing.xs,
+  },
+  transListTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
 
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 80 },
   emptyText: { fontSize: FontSize.md, color: Colors.textTertiary, marginTop: Spacing.md },

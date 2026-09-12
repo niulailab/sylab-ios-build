@@ -15,7 +15,7 @@ interface TypingIndicatorProps {
   currentTool?: ToolCallInfo | null;
 }
 
-function getToolLabel(toolName: string): string {
+export function getToolLabel(toolName: string): string {
   const n = toolName.toLowerCase();
   const isImageUnderstand = n.includes("understand_image") || n.includes("analyze_image") || n.includes("vision") || n.includes("ocr") || n.includes("describe_image");
   const isImageSearch = n.includes("search_image") || n.includes("image_search");
@@ -99,16 +99,22 @@ export const TypingIndicator: React.FC<TypingIndicatorProps> = ({ statusText, vi
     queued: "排队中",
     processing: "处理中",
     thinking: "正在思考理解…",
+    thinking_deep: "正在深度思考…",
+    thinking_long: "AI 正在努力分析中，请稍候…",
+    reasoning: "正在理解问题…",
+    tool_running: "正在调用工具",
+    tool_result: "获取结果中…",
   };
-  if (currentTool && currentTool.name) {
+  // statusText (Chinese label from chat page) takes priority; tool badge only when no explicit status
+  if (statusText) {
+    displayText = statusMap[statusText] || statusText;
+  } else if (currentTool && currentTool.name) {
     const label = getToolLabel(currentTool.name);
     if (currentTool.result) {
       displayText = `${label}完成`;
     } else {
       displayText = `正在${label}`;
     }
-  } else if (statusText) {
-    displayText = statusMap[statusText] || statusText;
   } else {
     displayText = "正在思考理解…";
   }

@@ -76,6 +76,9 @@ class FileHandler(http.server.BaseHTTPRequestHandler):
 
         if parsed.path == "/api/files":
             conv_id = self.headers.get("X-Conversation-Id") or params.get("conversation_id", [None])[0]
+            if conv_id:
+                try: conv_id = urllib.parse.unquote(conv_id)
+                except Exception: pass
             if not conv_id:
                 self._json(400, {"code": 400, "msg": "缺少 conversation_id"})
                 return
@@ -129,8 +132,8 @@ class FileHandler(http.server.BaseHTTPRequestHandler):
         # 下载文件: /api/files/{conv_id}/{filename}
         path_parts = parsed.path.strip("/").split("/")
         if len(path_parts) == 4 and path_parts[0] == "api" and path_parts[1] == "files":
-            conv_id = path_parts[2]
-            filename = path_parts[3]
+            conv_id = urllib.parse.unquote(path_parts[2])
+            filename = urllib.parse.unquote(path_parts[3])
             conv_dir = get_conv_dir(conv_id)
             if conv_dir is None:
                 self._json(400, {"code": 400, "msg": "无效"})
@@ -145,7 +148,11 @@ class FileHandler(http.server.BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            # 中文文件名用 RFC 5987 filename* 编码，避免 latin-1 崩溃；同时给 ASCII 兜底
+            ascii_fallback = "".join(c if ord(c) < 128 else "_" for c in filename)
+            enc_fn = urllib.parse.quote(filename)
+            self.send_header("Content-Disposition",
+                f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{enc_fn}")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Content-Length", str(filepath.stat().st_size))
             self.end_headers()
@@ -180,7 +187,17 @@ class FileHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             original_name = self.headers.get("X-File-Name", "unknown_file")
-            safe_name = "upload_" + "".join(c for c in original_name if c.isalnum() or c in "-_. ")
+            # 支持 percent-encoded 文件名（沙箱 curl 传中文时用 URL 编码，避免 latin1 乱码）
+            hdr_name = original_name
+            if "%" in hdr_name:
+                try:
+                    hdr_name = urllib.parse.unquote(hdr_name, encoding="utf-8")
+                except Exception:
+                    pass
+            # 保留中文等非 ASCII 文件名，仅剔除路径分隔符等危险字符
+            keep = "".join(c for c in hdr_name if c.isalnum() or c in "-_. " or ord(c) > 127)
+            keep = keep.replace("/", "_").replace("\\", "_").strip()
+            safe_name = "upload_" + (keep if keep else f"file_{int(time.time())}")
             if not safe_name or safe_name == "upload_":
                 safe_name = f"upload_file_{int(time.time())}"
 

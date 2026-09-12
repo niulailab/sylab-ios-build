@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from "react-native";
 import { SafeAlert } from "../src/utils/safeAlert";
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, BorderRadius, FontSize } from '../src/constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { authApi } from '../src/api/auth';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -56,29 +58,19 @@ export default function ForgotPasswordScreen() {
 
     setLoading(true);
     try {
-      // First verify the code
-      const verifyResult = await authApi.verifyCode(email, code);
-      if (verifyResult.verified || verifyResult.code === 0) {
-        // Then reset password
-        try {
-          await authApi.resetPassword(email, code, newPassword);
-          setStep('done');
-        } catch (resetErr: any) {
-          // If reset API doesn't exist yet, inform user
-          SafeAlert.alert('提示', '密码重置功能正在开发中，请使用验证码重新注册或使用原密码登录');
-        }
-      } else {
-        SafeAlert.alert('验证失败', '验证码错误或已过期');
-      }
+      // 服务端一步完成：校验验证码 + 重置密码 + 销毁验证码
+      await authApi.resetPassword(email.trim().toLowerCase(), code.trim(), newPassword);
+      setStep('done');
     } catch (e: any) {
-      SafeAlert.alert('验证失败', e.message || '请检查验证码');
+      const msg = e?.response?.data?.msg || e?.message || '重置失败，请稍后重试';
+      SafeAlert.alert('重置失败', msg);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior="padding">
+    <KeyboardAvoidingView style={[styles.container, { paddingTop: insets.top }]} behavior="padding">
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color={Colors.text} />

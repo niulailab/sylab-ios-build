@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { Storage } from '../utils/storage';
 import { authApi } from '../api/auth';
 import { setSessionId, setBearerToken, clearAuth } from '../api/client';
+import { normalizeFileUrl } from '../utils/avatarUrl';
 import type { UserInfo, LoginResponse } from '../types/api';
 
 interface AuthState {
@@ -75,7 +76,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           return /^\d+$/.test(n.trim()) ? '用户' : n;
         })(),
         email: data.email || account,
-        avatar_url: data.avatar_url || '',
+        avatar_url: normalizeFileUrl(data.avatar_url) || '',
         created_at: String(data.user_create_time || Date.now()),
       };
 
@@ -121,7 +122,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         try {
           const meResp = await authApi.getMe();
           if (meResp.code === 0 && meResp.data) {
-            const user = meResp.data;
+            const raw = meResp.data as any;
+            const user = { ...raw, avatar_url: normalizeFileUrl(raw.avatar_url || raw.avatar) || raw.avatar_url || '' };
             await Storage.setItem(USER_KEY, JSON.stringify(user));
             set({ user });
           }

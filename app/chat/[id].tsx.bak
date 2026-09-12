@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, FlatList, KeyboardAvoidingView, Platform, StyleSheet, ActivityIndicator, TouchableOpacity, Modal, Clipboard, Alert, Dimensions, StatusBar, TextInput, Animated, ScrollView } from 'react-native';
+import { View, Text, FlatList, KeyboardAvoidingView, Platform, StyleSheet, ActivityIndicator, TouchableOpacity, Modal, Alert, Dimensions, StatusBar, TextInput, Animated, ScrollView, Linking, Keyboard } from "react-native";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAlert } from "../../src/utils/safeAlert";
+// expo-video dynamically imported to prevent native crash on iOS 26
 import NetInfo from '@react-native-community/netinfo';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Colors, Spacing, BorderRadius, FontSize } from '../../src/constants/theme';
@@ -12,6 +15,8 @@ import { botApi } from '../../src/api/bot';
 import { creditsApi } from '../../src/api/credits';
 import { filesApi } from '../../src/api/files';
 import { sendMessageStream } from '../../src/api/sse';
+import { chatQueueApi } from '../../src/api/chatQueue';
+import { useChatQueue } from '../../src/hooks/useChatQueue';
 import { MessageBubble } from '../../src/components/MessageBubble';
 import { ChatInput, getPendingFiles, clearPendingFiles } from '../../src/components/ChatInput';
 import { EmptyState } from '../../src/components/EmptyState';
@@ -21,22 +26,74 @@ import { GenerationPlaceholder } from '../../src/components/GenerationPlaceholde
 import { Ionicons } from '@expo/vector-icons';
 import type { ChatMessage } from '../../src/types/api';
 
+// Safe Clipboard wrapper
+const SafeClipboard = {
+  setString: (text: string) => {
+    try {
+      const RN = require('react-native');
+      if (RN.Clipboard && RN.Clipboard.setString) {
+        RN.Clipboard.setString(text);
+      }
+    } catch (e) {
+      console.warn('[Clipboard] Failed to copy:', e);
+    }
+  }
+};
 
 
-// Global error handler for debugging
-if (typeof window !== "undefined") {
-  window.addEventListener("error", (e) => {
-    console.error("[GlobalError]", e.message, e.filename, e.lineno);
-  });
-  window.addEventListener("unhandledrejection", (e) => {
-    console.error("[UnhandledRejection]", e.reason);
-  });
+
+
+
+// Error Boundary to catch crashes and show error instead of white screen
+class ChatErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: string }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: '' };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error: String(error?.message || error) };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error('[ChatErrorBoundary]', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20, backgroundColor: '#fff' }}>
+          <Ionicons name="alert-circle" size={48} color="#ef4444" />
+          <Text style={{ fontSize: 18, fontWeight: 'bold', marginTop: 16, color: '#1f2937' }}>页面加载出错</Text>
+          <Text style={{ fontSize: 13, color: '#6b7280', marginTop: 12, textAlign: 'center' }}>{this.state.error}</Text>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
 }
+
+
+
 
 // Module-level message tracker - survives component remounts
 let _sessionMessages: any[] = [];
 // Nuclear backup: Map<convId, messages[]> - survives any reset
 const _messageBackup = new Map<string, any[]>();
+// Dedup tracker for user messages: key = convId|content|2secBucket
+const _recentUserMsgs = new Set<string>();
+function _isDuplicateUserMsg(convId: string, text: string, timestamp: number): boolean {
+  const secBucket = Math.floor(timestamp / 2000);
+  const key = `${convId}|${(text || '').trim()}|${secBucket}`;
+  if (_recentUserMsgs.has(key)) return true;
+  _recentUserMsgs.add(key);
+  if (_recentUserMsgs.size > 100) {
+    const arr = Array.from(_recentUserMsgs);
+    _recentUserMsgs.clear();
+    arr.slice(-50).forEach(k => _recentUserMsgs.add(k));
+  }
+  return false;
+}
 
 // Helper: match credit transactions to assistant messages by time proximity
 const matchTransactionsToMessages = (
@@ -88,6 +145,8 @@ const DEFAULT_BOT_NAME = 'sylab AI';
 // Video generation progress card - matches user screenshot style
 function VideoGenerationOverlay({ status, progress }: { status: string; progress: number }) {
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
+  const barAnim = React.useRef(new Animated.Value(0)).current;
+  const progressAnim = React.useRef(new Animated.Value(15)).current;
 
   React.useEffect(() => {
     const breathing = Animated.loop(
@@ -100,12 +159,36 @@ function VideoGenerationOverlay({ status, progress }: { status: string; progress
     return () => breathing.stop();
   }, []);
 
+  // Animated indeterminate bar that bounces up and down when progress is low
+  React.useEffect(() => {
+    if (progress < 50) {
+      const bounce = Animated.loop(
+        Animated.sequence([
+          Animated.timing(barAnim, { toValue: 1, duration: 1500, useNativeDriver: true }),
+          Animated.timing(barAnim, { toValue: 0, duration: 1500, useNativeDriver: true }),
+        ])
+      );
+      bounce.start();
+      return () => bounce.stop();
+    }
+  }, [progress < 50]);
+
+  // Smoothly animate progress bar to actual progress value
+  React.useEffect(() => {
+    const targetHeight = Math.max(10, Math.min(90, progress || 15));
+    Animated.timing(progressAnim, {
+      toValue: targetHeight,
+      duration: 500,
+      useNativeDriver: false,
+    }).start();
+  }, [progress]);
+
   const statusText = status === 'polling' || status === 'queued' ? '正在生成中...'
-    : status === 'processing' ? '生成中...'
+    : status === 'processing' ? '视频渲染中...'
     : status === 'completed' ? '生成完成，加载中...'
     : '正在生成中...';
 
-  const progressHeight = Math.max(10, Math.min(90, progress || 15));
+  const progressHeight = progressAnim;
 
   return (
     <View style={{ marginHorizontal: 12, marginVertical: 4 }}>
@@ -116,13 +199,139 @@ function VideoGenerationOverlay({ status, progress }: { status: string; progress
             <Ionicons name="videocam-outline" size={36} color="#9ca3af" />
           </Animated.View>
           <Text style={{ marginTop: 12, color: '#9ca3af', fontSize: 15, fontWeight: '500' }}>{statusText}</Text>
+          {progress > 0 && progress < 100 && (
+            <Text style={{ marginTop: 4, color: '#8B5CF6', fontSize: 12, fontWeight: '600' }}>{progress}%</Text>
+          )}
         </View>
-        {/* Right side: thin vertical progress bar */}
-        <View style={{ position: 'absolute', right: 20, top: '50%', transform: [{ translateY: -30 }], width: 3, height: 60, backgroundColor: '#f3f4f6', borderRadius: 2, overflow: 'hidden' }}>
-          <View style={{ width: '100%', height: `${progressHeight}%`, backgroundColor: '#8B5CF6', borderRadius: 2, position: 'absolute', bottom: 0 }} />
+        {/* Right side: animated vertical progress bar */}
+        <View style={{ position: 'absolute', right: 20, top: '50%', transform: [{ translateY: -30 }], width: 4, height: 60, backgroundColor: '#f3f4f6', borderRadius: 2, overflow: 'hidden' }}>
+          {progress < 50 ? (
+            <Animated.View style={{
+              width: '100%',
+              height: '40%',
+              backgroundColor: '#8B5CF6',
+              borderRadius: 2,
+              position: 'absolute',
+              bottom: barAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: ['0%', '60%'],
+              }),
+            }} />
+          ) : (
+            <Animated.View style={{
+              width: '100%',
+              height: progressHeight.interpolate({
+                inputRange: [10, 90],
+                outputRange: ['10%', '90%'],
+                extrapolate: 'clamp',
+              }),
+              backgroundColor: '#8B5CF6',
+              borderRadius: 2,
+              position: 'absolute',
+              bottom: 0,
+            }} />
+          )}
         </View>
       </View>
       <Text style={{ textAlign: 'center', marginTop: 10, color: '#d1d5db', fontSize: 12 }}>视频任务耗时较长，完成后会通知您</Text>
+    </View>
+  );
+}
+
+// Completed video card - inline video playback
+function CompletedVideoCard({ videoUrl, isDark }: { videoUrl: string; isDark: boolean }) {
+  if (!videoUrl) return null;
+  if (Platform.OS === 'web') {
+    return (
+      <View style={{ marginHorizontal: 12, marginVertical: 6 }}>
+        <View style={{ backgroundColor: isDark ? '#1e293b' : '#fff', borderRadius: 16, padding: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+            <Ionicons name="videocam" size={20} color="#8B5CF6" />
+            <Text style={{ color: isDark ? '#f1f5f9' : '#1f2937', fontSize: 14, fontWeight: '600', marginLeft: 8 }}>视频已生成</Text>
+          </View>
+          <video src={videoUrl} controls style={{ width: '100%', maxWidth: 480, borderRadius: 12, backgroundColor: '#000' }} />
+        </View>
+      </View>
+    );
+  }
+  return <NativeVideoPlayer videoUrl={videoUrl} isDark={isDark} />;
+}
+
+// Error boundary for native video player
+class NativeVideoErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ marginHorizontal: 12, marginVertical: 6, padding: 20, backgroundColor: '#f3f4f6', borderRadius: 16, alignItems: 'center' }}>
+          <Ionicons name="videocam-off-outline" size={28} color="#9ca3af" />
+          <Text style={{ color: '#6b7280', fontSize: 13, marginTop: 8 }}>视频播放不可用</Text>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function NativeVideoPlayer({ videoUrl, isDark }: { videoUrl: string; isDark: boolean }) {
+  const [videoModule, setVideoModule] = useState<{ useVideoPlayer: any; VideoView: any } | null>(null);
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    if (!videoUrl || Platform.OS === 'web') return;
+    let mounted = true;
+    import('expo-video').then(mod => {
+      if (mounted) setVideoModule({ useVideoPlayer: mod.useVideoPlayer, VideoView: mod.VideoView });
+    }).catch(() => {
+      if (mounted) setLoadError(true);
+    });
+    return () => { mounted = false; };
+  }, [videoUrl]);
+
+  if (!videoUrl || typeof videoUrl !== 'string') return null;
+  if (loadError) {
+    return (
+      <View style={{ marginHorizontal: 12, marginVertical: 6, padding: 20, backgroundColor: '#f3f4f6', borderRadius: 16, alignItems: 'center' }}>
+        <Ionicons name="videocam-off-outline" size={28} color="#9ca3af" />
+        <Text style={{ color: '#6b7280', fontSize: 13, marginTop: 8 }}>视频播放不可用</Text>
+      </View>
+    );
+  }
+  if (!videoModule) {
+    return (
+      <View style={{ marginHorizontal: 12, marginVertical: 6, padding: 20, backgroundColor: isDark ? '#1e293b' : '#fff', borderRadius: 16, alignItems: 'center' }}>
+        <ActivityIndicator size="small" color="#8B5CF6" />
+        <Text style={{ color: isDark ? '#94a3b8' : '#6b7280', fontSize: 13, marginTop: 8 }}>加载视频播放器...</Text>
+      </View>
+    );
+  }
+  return (
+    <NativeVideoErrorBoundary>
+      <NativeVideoPlayerInner videoUrl={videoUrl} isDark={isDark} useVideoPlayer={videoModule.useVideoPlayer} VideoView={videoModule.VideoView} />
+    </NativeVideoErrorBoundary>
+  );
+}
+
+function NativeVideoPlayerInner({ videoUrl, isDark, useVideoPlayer, VideoView }: { videoUrl: string; isDark: boolean; useVideoPlayer: any; VideoView: any }) {
+  const player = useVideoPlayer(videoUrl, (p: any) => { p.loop = false; });
+  return (
+    <View style={{ marginHorizontal: 12, marginVertical: 6 }}>
+      <View style={{ backgroundColor: isDark ? '#1e293b' : '#fff', borderRadius: 16, padding: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+          <Ionicons name="videocam" size={20} color="#8B5CF6" />
+          <Text style={{ color: isDark ? '#f1f5f9' : '#1f2937', fontSize: 14, fontWeight: '600', marginLeft: 8 }}>视频已生成</Text>
+        </View>
+        <VideoView player={player} style={{ width: '100%', height: 220, borderRadius: 12, backgroundColor: '#000' }} contentFit="contain" allowsFullscreen allowsPictureInPicture />
+      </View>
     </View>
   );
 }
@@ -162,6 +371,13 @@ const sanitizeVideoContent = (text: string): string => {
   return result.trim();
 };
 
+
+
+// Strip emoji from AI text content (system prompt says no emoji but model doesn't always comply)
+const stripEmoji = (text: string): string => {
+  if (!text) return text;
+  return text.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F000}-\u{1F02F}]|[\u{1F0A0}-\u{1F0FF}]|[\u{1F100}-\u{1F1FF}]|[\u{1F200}-\u{1F2FF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F900}-\u{1F9FF}]|\u{FE0F}|\u{200D}/gu, '');
+};
 
 const stripMarkdown = (text: string): string => {
   if (!text) return "";
@@ -206,42 +422,80 @@ const formatTime = (ts: any): string => {
   return `${y}/${mo}/${d}`;
 };
 
-export default function ChatDetailScreen() {
+function ChatDetailScreenInner() {
   const { id, bot_id, prompt } = useLocalSearchParams<{ id: string; bot_id?: string; prompt?: string }>();
   const navigation = useNavigation();
   const router = useRouter();
   const flatListRef = useRef<FlatList>(null);
-  const [showScrollBtn, setShowScrollBtn] = useState(false);
-  const streamRef = useRef<{ abort: () => void } | null>(null);
+  const isNearBottomRef = useRef(true);
 
-  const scrollToBottom = () => {
-    flatListRef.current?.scrollToEnd({ animated: true });
-  };
-
-  const handleScroll = (event: any) => {
-    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
-    const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
-    const shouldShow = distanceFromBottom > 200;
-    setShowScrollBtn(prev => prev !== shouldShow ? shouldShow : prev);
-  };
-
-
-  const { user, patToken } = useAuthStore();
+  const { user, patToken, isRestoring } = useAuthStore();
+  const userName = (() => {
+    const n = user?.name || '';
+    return /^\d+$/.test(n.trim()) ? '用户' : (n || '用户');
+  })();
+  const userAvatar = user?.avatar_url || '';
   const {
     messages, isStreaming, streamingContent, streamingMessageId,
     toolCalls, error,
     setMessages, appendDelta, appendToolCall, finishStreaming,
     clearStreaming, setError, startStreaming,
     activityStatus, generatingType,
+    setActivityStatus,
   } = useChatStore();
+
+  // Auto-scroll when messages array changes (only if user is near bottom)
+  const messagesLength = messages.length;
+  useEffect(() => {
+    if (messagesLength > 0 && isNearBottomRef.current) {
+      requestAnimationFrame(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+        setTimeout(() => { if (isNearBottomRef.current) flatListRef.current?.scrollToEnd({ animated: false }); }, 100);
+      });
+    }
+  }, [messagesLength]);
+
+  // Auto-scroll during streaming (only if near bottom)
+  useEffect(() => {
+    if (isStreaming && isNearBottomRef.current) {
+      const timer = setTimeout(() => {
+        if (isNearBottomRef.current) flatListRef.current?.scrollToEnd({ animated: false });
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [streamingContent, isNearBottomRef.current]);
+
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const streamRef = useRef<{ abort: () => void } | null>(null);
+  const queueTaskIdRef = useRef<string | null>(null);
+  const inFlightSendRef = useRef<string | null>(null);
+  const ssePollingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const { registerTask, clearTask, activeTaskRef, getActiveTask } = useChatQueue(id as string);
+
+  const scrollToBottom = () => {
+    isNearBottomRef.current = true;
+    flatListRef.current?.scrollToEnd({ animated: true });
+  };
+
+  const handleScroll = (event: any) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    isNearBottomRef.current = distanceFromBottom < 150;
+    const shouldShow = distanceFromBottom > 200;
+    setShowScrollBtn(prev => prev !== shouldShow ? shouldShow : prev);
+  };
+
+
 
   const [loading, setLoading] = useState(true);
   const [botName, setBotName] = useState(DEFAULT_BOT_NAME);
+  const [botAvatar, setBotAvatar] = useState('');
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [currentBotId, setCurrentBotId] = useState<string>(
     bot_id || DEFAULT_BOT_ID
   );
   const [initError, setInitError] = useState<string | null>(null);
+  const [debugError, setDebugError] = useState<string | null>(null);
   // Bot selector
   const [showBotSelector, setShowBotSelector] = useState(false);
   const [availableBots, setAvailableBots] = useState<Array<{id: string; name: string; icon_url?: string}>>([]);
@@ -263,9 +517,10 @@ export default function ChatDetailScreen() {
   // Message queue for continuous sending
   const messageQueueRef = useRef<Array<{ text: string; files?: any[]; fileIds?: string[] }>>([]);
   // Track which user message each AI reply is responding to
-  const [replyToMap, setReplyToMap] = useState<Record<string, { role: string; content: string }>>({});
   const lastUserMsgRef = useRef<ChatMessage | null>(null);
   const pendingFilesRef = useRef<Array<{blob: Blob, name: string, type: string}>>([]);
+  // Track when last tool completed, to keep "X完成" visible briefly
+  const lastToolCompleteRef = useRef<number>(0);
 
   // Pagination
   const [page, setPage] = useState(1);
@@ -293,15 +548,37 @@ export default function ChatDetailScreen() {
     return () => unsub();
   }, []);
 
+  // Keyboard height tracking for iOS input avoidance
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const insets = useSafeAreaInsets();
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
+
+
+  const lastScrollTimeRef = useRef(0);
   // Auto-scroll when activity status or streaming content changes
   useEffect(() => {
-    if (isStreaming) {
-      setTimeout(() => scrollToBottom(), 100);
+    if (useChatStore.getState().isStreaming) {
+      const now = Date.now();
+      if (now - lastScrollTimeRef.current > 300) {
+        lastScrollTimeRef.current = now;
+        setTimeout(() => scrollToBottom(), 100);
+      }
     }
   }, [activityStatus, streamingContent, generatingType, isStreaming]);
 
+  const lastLoadMoreRef = useRef(0);
   const loadMoreMessages = async () => {
-    if (loadingMoreRef.current || !hasMore || isNewChat) return;
+    const now = Date.now();
+    if (loadingMoreRef.current || !hasMore || isNewChat || (now - lastLoadMoreRef.current < 2000)) return;
+    lastLoadMoreRef.current = now;
     const convId = conversationId || id || "";
     if (!convId) return;
     
@@ -310,14 +587,25 @@ export default function ChatDetailScreen() {
     try {
       const nextPage = page + 1;
       const result = await chatApi.getMessages(convId, { page_num: nextPage, page_size: 50 });
-      const msgs = (result.items || []).reverse();
+      const msgs = (result.items || []).filter((m: any) => m && m.id && (m.role === "user" || (m.content && m.content.trim() && !m.content.includes("generate_answer_finish")))).map((m: any) => ({...m, content: m.content?.replace(/[$TRAE_REF](.*?)/g, "")})).reverse();
       if (msgs.length === 0) {
         setHasMore(false);
       } else {
         const prev = useChatStore.getState().messages;
         const validMsgs = msgs.filter((m: any) => m && m.id);
         const existingIds = new Set(prev.map(m => m.id).filter(Boolean));
-        const newMsgs = validMsgs.filter((m: any) => !existingIds.has(m.id));
+        // Also dedup by content+time for local temp msgs vs server msgs
+        const existingKeys = new Set(prev.map((m: any) => {
+          const _t = _ts(m.created_at);
+          return (m.role || '') + '|' + (m.content || '').trim().slice(0, 200) + '|' + Math.floor(_t / 1000);
+        }));
+        const newMsgs = validMsgs.filter((m: any) => {
+          if (existingIds.has(m.id)) return false;
+          const _t = _ts(m.created_at);
+          const _k = (m.role || '') + '|' + (m.content || '').trim().slice(0, 200) + '|' + Math.floor(_t / 1000);
+          if (existingKeys.has(_k)) return false;
+          return true;
+        });
         if (newMsgs.length > 0) {
           setMessages([...newMsgs, ...prev]);
         }
@@ -339,8 +627,9 @@ export default function ChatDetailScreen() {
   useEffect(() => {
     navigation.setOptions({
       title: botName,
+      headerBackTitle: '', headerBackButtonDisplayMode: 'minimal',
       headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 }}>
           <TouchableOpacity onPress={() => { fetchBots(); setShowBotSelector(true); }}>
             <Ionicons name="swap-horizontal" size={20} color="#6030ff" />
           </TouchableOpacity>
@@ -359,19 +648,31 @@ export default function ChatDetailScreen() {
   const lastProcessedConvRef = useRef<string | null>(null);
 
   useEffect(() => {
-      
+    // Abort any in-flight stream from a previous conversation before switching
+    if (streamRef.current) {
+      try { streamRef.current.abort(); } catch (e) {}
+      streamRef.current = null;
+    }
+    // Reset streaming state so stale "connecting" indicator never carries over
+    if (useChatStore.getState().isStreaming) {
+      console.log('[Chat] Resetting stale streaming state on conversation switch');
+      useChatStore.getState().clearStreaming();
+    }
+
     let cancelled = false;
-    
+
     const init = async () => {
+      console.log('[Chat] Init called, id:', id, 'user:', !!user, 'isRestoring:', isRestoring);
       if (!id) { 
         
         return; 
       }
-      // Wait for auth to restore before loading messages
-      if (!user) { 
-        
-        setLoading(true); 
-        return; 
+      // Wait for auth to restore
+      if (isRestoring || !user) {
+        setLoading(true);
+        // Safety timeout - dont get stuck forever
+        setTimeout(() => setLoading(false), 8000);
+        return;
       }
       // Skip if already loaded this conversation
       if (lastProcessedConvRef.current === id) { 
@@ -384,6 +685,8 @@ export default function ChatDetailScreen() {
       // Clear old messages when switching conversations
       setMessages([]);
       _sessionMessages = [];
+      _messageBackup.clear();
+      _recentUserMsgs.clear();
       setPage(1);
       setHasMore(true);
 
@@ -404,13 +707,38 @@ export default function ChatDetailScreen() {
         } else {
           setConversationId(id);
           const result = await chatApi.getMessages(id, { page_num: 1, page_size: 50 });
-          const msgs = result.items || [];
+          const msgs = (result.items || []).filter((m: any) => m && m.id && (m.role === "user" || (m.content && m.content.trim() && !m.content.includes("generate_answer_finish")))).map((m: any) => ({...m, content: m.content?.replace(/[$TRAE_REF](.*?)/g, "")}));
           msgs.reverse();
           if (!cancelled) {
             
-            setMessages(msgs);
-            _sessionMessages = msgs;
-            _messageBackup.set(id as string, msgs);
+              // Dedup: merge server msgs with any existing local msgs (e.g., just-sent user message)
+            const _existing = useChatStore.getState().messages;
+            const _serverIds = new Set(msgs.map((m: any) => m.id).filter(Boolean));
+            // Dedup local msgs by content+time against server msgs (local temp IDs won't match server IDs)
+            const _serverKeys = new Set(msgs.map((m: any) => {
+              const _t = _ts(m.created_at);
+              return (m.role || '') + '|' + (m.content || '').trim().slice(0, 200) + '|' + Math.floor(_t / 1000);
+            }));
+            const _localOnly = _existing.filter((m: any) => {
+              if (_serverIds.has(m.id)) return false;
+              const _t = _ts(m.created_at);
+              const _k = (m.role || '') + '|' + (m.content || '').trim().slice(0, 200) + '|' + Math.floor(_t / 1000);
+              if (_serverKeys.has(_k)) return false;
+              return true;
+            });
+            const _merged = [..._localOnly, ...msgs];
+            // Also dedup by content+role for same timestamp (local temp msgs vs server msgs)
+            const _seen = new Set<string>();
+            const _deduped = _merged.filter((m: any) => {
+              const _msts = _ts(m.created_at);
+              const key = m.role + '|' + (m.content || '').trim().slice(0, 100) + '|' + Math.floor(_msts / 1000);
+              if (_seen.has(key)) return false;
+              _seen.add(key);
+              return true;
+            });
+            setMessages(_deduped);
+            _sessionMessages = _deduped;
+            _messageBackup.set(id as string, _deduped);
             // Batch query transactions for historical cost matching
             try {
               const txResult = await creditsApi.getTransactions(user.id, { page: 1, page_size: 50 });
@@ -427,7 +755,8 @@ export default function ChatDetailScreen() {
           }
         }
       } catch (e: any) {
-        console.error("[Chat] Init failed:", e?.message, e?.response?.status);
+        console.error("[Chat] Init failed:", e?.message, e?.response?.status, e?.stack);
+          setDebugError(e?.message || String(e));
         if (!cancelled) {
           setMessages([]);
           _sessionMessages = [];
@@ -442,11 +771,135 @@ export default function ChatDetailScreen() {
     };
     
     init();
-    return () => { 
+    return () => {
       cancelled = true;
-      clearStreaming(); 
+      if (ssePollingTimerRef.current) { clearTimeout(ssePollingTimerRef.current); ssePollingTimerRef.current = null; }
+      // Abort SSE when navigating away from this chat screen
+      if (streamRef.current) {
+        try { streamRef.current.abort(); } catch (e) {}
+        streamRef.current = null;
+      }
     };
-  }, [id, user]);
+  }, [id, user, isRestoring]);
+
+
+  // === Recover pending queue task after page remount ===
+  useEffect(() => {
+    const recoverPendingTask = async () => {
+      // Clear any orphaned localStorage tasks from previous conversations
+      if (!user) return;
+      // Check for active task belonging to THIS conversation
+      const task = getActiveTask(id as string);
+      if (!task) {
+        // No task for this conversation - clean up any orphaned tasks
+        try {
+          if (Platform.OS === 'web') {
+            const keys = Object.keys(localStorage).filter(k => k.startsWith('sylab_active_queue_task_') && !k.endsWith(id as string));
+            keys.forEach(k => localStorage.removeItem(k));
+          }
+        } catch(e) {}
+        return;
+      }
+      if (!task.isStreaming) return;
+      // Double-check: only recover tasks belonging to THIS conversation
+      if (task.conversationId !== id) {
+        console.log('[ChatQueue] Skipping task from different conversation:', task.conversationId, 'vs', id);
+        return;
+      }
+
+      console.log('[ChatQueue] Recovering pending task on mount:', task.taskId);
+      try {
+        const status = await chatQueueApi.getStatus(task.taskId);
+        if (status.status === 'processing') {
+          // Task still running on server - reconnect stream
+          console.log('[ChatQueue] Task still processing, resuming stream');
+          startStreaming();
+          chatQueueApi.connectStream(task.taskId, {
+            onDelta: (text) => appendDelta(text),
+            onComplete: (chatId) => {
+              const cid = chatId || `msg_${Date.now()}`;
+              const cap = useChatStore.getState().streamingContent;
+              useChatStore.setState({ isStreaming: false, streamingContent: '', streamingMessageId: null, activityStatus: '', generatingType: null });
+              if (cap) {
+                const _cur = useChatStore.getState().messages;
+                if (!_cur.some(m => m.id === cid || (m.role === 'assistant' && m.content === cap))) {
+                  setMessages([..._cur, { id: cid, conversation_id: id || '', role: 'assistant', type: 'text', content: cap, content_type: 'markdown', created_at: String(Date.now()), updated_at: String(Date.now()) }]);
+                }
+              }
+              clearTask();
+            },
+            onError: (err) => {
+              console.error('[ChatQueue] Recovery stream error:', err);
+              // Fall back to polling
+              const pollRecovery = async () => {
+                const t = getActiveTask();
+                if (!t || t.taskId !== task.taskId) return;
+                try {
+                  const st = await chatQueueApi.getStatus(task.taskId);
+                  if (st.status === 'completed') {
+                    const { events } = await chatQueueApi.getEvents(task.taskId, t.lastEventIndex);
+                    for (const event of events) {
+                      t.lastEventIndex = event.index + 1;
+                      if (event.event_type === 'conversation.message.delta' && event.data?.content) {
+                        appendDelta(event.data.content);
+                      }
+                    }
+                    finishStreaming(st.chat_id || `msg_${Date.now()}`);
+                    clearTask();
+                  } else if (st.status === 'failed') {
+                    setError(st.error || 'Background task failed');
+                    finishStreaming(`msg_${Date.now()}`);
+                    clearTask();
+                  } else {
+                    const { events } = await chatQueueApi.getEvents(task.taskId, t.lastEventIndex);
+                    for (const event of events) {
+                      t.lastEventIndex = event.index + 1;
+                      if (event.event_type === 'conversation.message.delta' && event.data?.content) {
+                        appendDelta(event.data.content);
+                      }
+                    }
+                    setTimeout(pollRecovery, 3000);
+                  }
+                } catch (pe) {
+                  setTimeout(pollRecovery, 5000);
+                }
+              };
+              setTimeout(pollRecovery, 2000);
+            },
+          });
+        } else if (status.status === 'completed') {
+          // Task completed while we were away - fetch results
+          console.log('[ChatQueue] Task completed while away, recovering results');
+          startStreaming();
+          let awayAccum = '';
+          const { events } = await chatQueueApi.getEvents(task.taskId, task.lastEventIndex);
+          for (const event of events) {
+            task.lastEventIndex = event.index + 1;
+            if (event.event_type === 'conversation.message.delta' && event.data?.content) {
+              awayAccum += event.data.content;
+            }
+          }
+          const awayId = status.chat_id || `msg_${Date.now()}`;
+          useChatStore.setState({ isStreaming: false, streamingContent: '', streamingMessageId: null, activityStatus: '', generatingType: null });
+          if (awayAccum) {
+            const _cur = useChatStore.getState().messages;
+            if (!_cur.some(m => m.id === awayId || (m.role === 'assistant' && m.content === awayAccum))) {
+              setMessages([..._cur, { id: awayId, conversation_id: id || '', role: 'assistant', type: 'text', content: awayAccum, content_type: 'markdown', created_at: String(Date.now()), updated_at: String(Date.now()) }]);
+            }
+          }
+          clearTask();
+        } else if (status.status === 'failed') {
+          setError(status.error || 'Background task failed');
+          clearTask();
+        }
+      } catch (e) {
+        console.error('[ChatQueue] Recovery failed:', e);
+        clearTask();
+      }
+    };
+
+    recoverPendingTask();
+  }, []);
 
   // Auto-scroll useEffect removed to prevent infinite scroll loop
 
@@ -458,19 +911,19 @@ export default function ChatDetailScreen() {
     setLongPressMenu({ visible: false, message: null });
   };
 
-  const handleCopy = async () => {
+  const handleCopy = () => {
     if (!longPressMenu.message) return;
     const plainText = stripMarkdown(longPressMenu.message.content || '');
-    try {
-      if (Platform.OS === 'web') {
-        await navigator.clipboard.writeText(plainText);
-      } else {
-        Clipboard.setString(plainText);
-      }
-    } catch {
-      // silent fail
-    }
     closeMenu();
+    if (Platform.OS === 'web') {
+      // Web端统一用prompt兜底，兼容iOS Safari HTTP等所有环境
+      setTimeout(() => {
+        window.prompt('复制消息（长按文字可手动复制）：', plainText);
+      }, 100);
+    } else {
+      SafeClipboard.setString(plainText);
+      SafeAlert.alert('已复制');
+    }
   };
 
   const handleQuote = () => {
@@ -481,16 +934,16 @@ export default function ChatDetailScreen() {
 
 
 
-  const processQueue = async () => {
-    if (messageQueueRef.current.length === 0 || isStreaming) return;
+  const processQueue = async () => { console.log("[Queue] processQueue called, queueLen:", messageQueueRef.current.length, "isStreaming:", useChatStore.getState().isStreaming, "convId:", conversationId || id);
+    if (messageQueueRef.current.length === 0 || useChatStore.getState().isStreaming) { console.log("[Queue] EXIT: len=0 or streaming"); return; }
     const next = messageQueueRef.current.shift()!;
-    await doSend(next.text, next.files, next.fileIds, (conversationId || id || "") as string);
+    await doSend(next.text, next.files, next.fileIds, (conversationId || id || "") as string, true);
   };
 
   const effectiveConvId = conversationId || id || '';
 
   const handleSend = async (text: string, _files?: any[], fileIds?: string[]) => {
-    if (!text.trim() || !patToken) return;
+    if (!patToken) return; if (!text.trim() && (!fileIds || fileIds.length === 0)) return;
 
     // Ensure conversationId is set; create conversation if needed
     let currentConvId = conversationId || id;
@@ -513,30 +966,57 @@ export default function ChatDetailScreen() {
     }
     
     // If already streaming, queue the message
-    if (isStreaming) {
-      messageQueueRef.current.push({ text, files: _files, fileIds });
+    if (useChatStore.getState().isStreaming) {
+      messageQueueRef.current.push({ text, files: _files, fileIds }); console.log("[Queue] message QUEUED:", (text || "").substring(0,30), "total:", messageQueueRef.current.length);
       // Still add user message to display immediately
+      const qHasImage = _files && _files.some((f: any) => (f.type || '').toLowerCase().startsWith('image/'));
+      let qFirstImg = '';
+      if (qHasImage && _files) {
+        const qFirstFile = _files.find((f: any) => (f.type || '').toLowerCase().startsWith('image/'));
+        qFirstImg = qFirstFile ? (qFirstFile.url || '') : '';
+      }
       const userMsg: ChatMessage = {
         id: `msg_${Date.now()}`,
         conversation_id: effectiveConvId,
         role: 'user',
-        type: 'text',
-        content: text,
-        content_type: 'text',
+        type: qHasImage && qFirstImg ? 'image_url' : 'text',
+        content: qHasImage && qFirstImg ? qFirstImg : text,
+        content_type: qHasImage && qFirstImg ? 'image_url' : 'text',
         created_at: String(Date.now()),
         updated_at: String(Date.now()),
       };
       lastUserMsgRef.current = userMsg;
-      setMessages([...messages, userMsg]);
-      _sessionMessages = [..._sessionMessages, userMsg];
+      if (!_isDuplicateUserMsg(effectiveConvId, userMsg.content, Number(userMsg.created_at))) {
+        const _prevA = useChatStore.getState().messages;
+        if (!_prevA.some(m => m.id === userMsg.id)) {
+          setMessages([..._prevA, userMsg]);
+          _sessionMessages = [..._sessionMessages, userMsg];
+        }
+      }
       return;
     }
     
     await doSend(text, _files, fileIds, currentConvId as string);
   };
 
-  const doSend = async (text: string, _files?: any[], fileIds?: string[], forcedConvId?: string) => {
+  // Normalize any timestamp to milliseconds (server uses seconds, local uses ms)
+  const _ts = (t: any): number => {
+    const n = Number(t);
+    if (!n || isNaN(n)) return 0;
+    return n < 1e12 ? n * 1000 : n;
+  };
+
+  const doSend = async (text: string, _files?: any[], fileIds?: string[], forcedConvId?: string, skipUserMsg?: boolean) => {
     const effectiveConvId = forcedConvId || conversationId || id || '';
+
+    // Dedupe in-flight identical sends (double tap / race between queue + direct send)
+    const sendFingerprint = effectiveConvId + '|' + (text || '').trim() + '|' + (fileIds ? fileIds.join(',') : '') + '|' + Date.now().toString().slice(0, -3);
+    if (inFlightSendRef.current === sendFingerprint) {
+      console.log('[Chat] doSend skipped duplicate in-flight:', sendFingerprint);
+      return;
+    }
+    inFlightSendRef.current = sendFingerprint;
+    setTimeout(() => { if (inFlightSendRef.current === sendFingerprint) inFlightSendRef.current = null; }, 4000);
 
     let finalContent = text;
     if (quotedMessage) {
@@ -546,48 +1026,78 @@ export default function ChatDetailScreen() {
       setQuotedMessage(null);
     }
 
+    if (!skipUserMsg) {
+    // Detect if there are image files attached
+    const hasImageFiles = _files && _files.some((f: any) => (f.type || '').toLowerCase().startsWith('image/'));
+    let firstImageUrl = '';
+    if (hasImageFiles && _files) {
+      const firstImgFile = _files.find((f: any) => (f.type || '').toLowerCase().startsWith('image/'));
+      firstImageUrl = firstImgFile ? (firstImgFile.url || '') : '';
+    }
     const userMsg: ChatMessage = {
       id: `msg_${Date.now()}`,
       conversation_id: effectiveConvId,
       role: 'user',
-      type: 'text',
-      content: finalContent,
-      content_type: 'text',
+      type: hasImageFiles && firstImageUrl ? 'image_url' : 'text',
+      content: hasImageFiles && firstImageUrl ? firstImageUrl : finalContent,
+      content_type: hasImageFiles && firstImageUrl ? 'image_url' : 'text',
       created_at: String(Date.now()),
       updated_at: String(Date.now()),
     };
     lastUserMsgRef.current = userMsg;
-    setMessages([...messages, userMsg]);
-      _sessionMessages = [..._sessionMessages, userMsg];
-      // Save to nuclear backup immediately
+    const _prevB = useChatStore.getState().messages;
+    const _isContentDup = _prevB.some(m => m.role === 'user' && m.content === userMsg.content && Math.abs(_ts(m.created_at) - _ts(userMsg.created_at)) < 10000);
+    if (!_isDuplicateUserMsg(effectiveConvId, userMsg.content, Number(userMsg.created_at)) && !_isContentDup) {
+      if (!_prevB.some(m => m.id === userMsg.id)) {
+        setMessages([..._prevB, userMsg]);
+        _sessionMessages = [..._sessionMessages, userMsg];
+      }
+    }
+      // Save to nuclear backup immediately (dedup by content)
       const backupKey = effectiveConvId || 'pending';
       const existing = _messageBackup.get(backupKey) || [];
-      _messageBackup.set(backupKey, [...existing, userMsg]);
+      if (!existing.some(m => m.role === 'user' && m.content === userMsg.content)) {
+        _messageBackup.set(backupKey, [...existing, userMsg]);
+      }
+    }
     startStreaming();
 
-    let aiContent = finalContent;
-    const currentConvId = effectiveConvId;
-    if (currentConvId) {
-      try {
-        const fileList = await filesApi.list(currentConvId);
-        if (fileList.files && fileList.files.length > 0) {
-          const fileSummary = fileList.files.map(f =>
-            `- ${f.name} (${f.type}, ${f.size} bytes)`
-          ).join("\n");
-          aiContent = finalContent + "\n\n[Available project files in this conversation]\n" + fileSummary + "\n[To read file content, ask the user to share it or check project files]";
-        }
-      } catch {}
-    }
+    // Track SSE state for onError guard (prevents queue starting when SSE is actually working)
+    let sseReceivedData = false;
+    let sseCompleted = false;
+
+    const aiContent = finalContent;
 
     // Build additional_messages: combine files + text into object_string for multimodal support
     const additionalMsgs: Array<{ role: string; content: string; content_type: string }> = [];
-    if (fileIds && fileIds.length > 0) {
-      // Use object_string (mix) format to send files + text together as one message
-      const contentParts: Array<{ type: string; text?: string; file_id?: string }> = [];
+    // Collect image URLs from _files (uploaded via /user-upload)
+    const imageUrls: string[] = [];
+    if (_files && _files.length > 0) {
+      for (const f of _files) {
+        const u = (f as any).url || '';
+        if (u && u.startsWith('http')) imageUrls.push(u);
+      }
+    }
+    const realFileIds: string[] = [];
+    if (fileIds) {
       for (const fid of fileIds) {
+        if (fid && fid.startsWith('http')) {
+          imageUrls.push(fid);
+        } else if (fid) {
+          realFileIds.push(fid);
+        }
+      }
+    }
+
+    if (imageUrls.length > 0 || realFileIds.length > 0) {
+      const contentParts: Array<{ type: string; text?: string; file_id?: string; file_url?: string }> = [];
+      for (const imgUrl of imageUrls) {
+        contentParts.push({ type: 'image', file_url: imgUrl });
+      }
+      for (const fid of realFileIds) {
         contentParts.push({ type: 'file', file_id: fid });
       }
-      contentParts.push({ type: 'text', text: aiContent });
+      contentParts.push({ type: 'text', text: aiContent || '请分析这张图片' });
       additionalMsgs.push({
         role: 'user',
         content: JSON.stringify(contentParts),
@@ -606,6 +1116,30 @@ export default function ChatDetailScreen() {
     const localConvId = conversationId;
     let localAiAccum = "";
 
+    // === Chat Queue: submit task for background resilience (fire-and-forget, don't block SSE) ===
+    let queueSubmitResolve: ((id: string) => void) | null = null;
+    const queueSubmitPromise = new Promise<string>((res) => { queueSubmitResolve = res; });
+    chatQueueApi.submit({
+      bot_id: currentBotId,
+      user_id: user?.id || 'app_user',
+      conversation_id: effectiveConvId || undefined,
+      additional_messages: additionalMsgs,
+      stream: true,
+      auto_save_history: true,
+      bearer_token: patToken || '',
+    }, patToken || '').then((queueResp) => {
+      queueTaskIdRef.current = queueResp.task_id;
+      registerTask(queueResp.task_id, effectiveConvId || '');
+      console.log('[ChatQueue] Task submitted:', queueResp.task_id);
+      if (queueSubmitResolve) queueSubmitResolve(queueResp.task_id);
+    }).catch((qe) => {
+      console.warn('[ChatQueue] Submit failed (non-blocking):', qe);
+      if (queueSubmitResolve) queueSubmitResolve('');
+    });
+
+
+
+    setActivityStatus("正在思考理解…");
     streamRef.current = sendMessageStream(
       {
         bot_id: currentBotId,
@@ -618,17 +1152,79 @@ export default function ChatDetailScreen() {
       patToken || "",
       {
         onDelta: (delta) => {
-          localAiAccum += delta;
-          appendDelta(delta);
+          sseReceivedData = true;
+          const cleanDelta = stripEmoji(delta);
+          localAiAccum += cleanDelta;
+          appendDelta(cleanDelta);
         },
-        onToolCall: (name, args) => appendToolCall(name, args),
+        onToolCall: (name, args, result) => {
+          if (result) {
+            lastToolCompleteRef.current = Date.now();
+          }
+          appendToolCall(name, args, result);
+          // Detect video task_id from tool result and start polling immediately
+          if (result && (name === 'video_generate' || name === 'generate_video')) {
+            try {
+              const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+              const resultData = typeof parsed.data === 'string' ? JSON.parse(parsed.data) : (parsed.data || parsed);
+              const taskId = resultData.task_id || resultData.taskId;
+              if (taskId && taskId.startsWith('task_')) {
+                console.log('[Video] Detected task_id from tool result:', taskId);
+                // Store for later msgId association
+                if (!(globalThis as any).__pendingVideoTasks) (globalThis as any).__pendingVideoTasks = [];
+                (globalThis as any).__pendingVideoTasks.push(taskId);
+                // Start polling immediately with empty msgId (will be updated in onComplete)
+                startVideoPolling(taskId, '');
+              }
+            } catch (e) {
+              console.warn('[Video] Failed to parse tool result:', e);
+            }
+          }
+        },
         onComplete: (chatId, convId, tokens) => {
+          sseCompleted = true;
           try {
+          // Clear queue task - SSE completed normally
+          // Cancel standby queue task: wait briefly for submit promise to resolve,
+          // then cancel with a retry so a fast SSE completion can never cause duplicate messages.
+          (async () => {
+            try {
+              const tid = await Promise.race([
+                queueSubmitPromise,
+                new Promise<string>((r) => setTimeout(() => r(queueTaskIdRef.current || ''), 3000)),
+              ]);
+              const taskId = tid || queueTaskIdRef.current;
+              if (taskId) {
+                for (let attempt = 0; attempt < 3; attempt++) {
+                  try {
+                    await chatQueueApi.cancel(taskId);
+                    console.log('[ChatQueue] Cancelled standby task:', taskId);
+                    break;
+                  } catch (ce) {
+                    console.warn('[ChatQueue] Cancel attempt', attempt + 1, 'failed:', ce);
+                    await new Promise((r) => setTimeout(r, 400));
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn('[ChatQueue] Cancel flow error:', e);
+            }
+          })();
+          clearTask();
           // Use closure-captured content (immune to store/state resets)
-          const capturedAiContent = localAiAccum || useChatStore.getState().streamingContent;
+          const capturedAiContent = stripEmoji(localAiAccum || useChatStore.getState().streamingContent);
           const aiMsgId = chatId || `msg_${Date.now()}`;
-          finishStreaming(aiMsgId);
-          // FIX: Persist AI reply to messages store after streaming ends
+          // Capture toolCalls from store BEFORE clearing streaming state
+          const savedToolCalls = useChatStore.getState().toolCalls;
+          // Clear streaming state FIRST so the streaming footer disappears immediately
+          // Then add the final message - this prevents both showing at once (duplicate)
+          useChatStore.setState({
+            isStreaming: false,
+            streamingContent: '',
+            streamingMessageId: null,
+            activityStatus: '',
+            generatingType: null,
+          });
           if (capturedAiContent) {
             const aiMsg: ChatMessage = {
               id: aiMsgId,
@@ -637,20 +1233,26 @@ export default function ChatDetailScreen() {
               type: 'text',
               content: capturedAiContent,
               content_type: 'markdown',
+              tool_calls: savedToolCalls.length > 0 ? savedToolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.arguments || '{}' } })) : undefined,
               created_at: String(Date.now()),
               updated_at: String(Date.now()),
             };
-            const _cur = useChatStore.getState().messages; setMessages([..._cur.filter(m => m.id !== aiMsgId), aiMsg]);
-            console.log("[Chat] AI message persisted to store. id:", aiMsgId, "len:", capturedAiContent.length);
+            // Deduplicate: remove any existing message with same id OR same assistant content within 5s
+            const _cur = useChatStore.getState().messages;
+            const _now = Date.now();
+            const filtered = _cur.filter(m =>
+              m.id !== aiMsgId &&
+              !(m.role === 'assistant' && m.content === capturedAiContent && Math.abs(_ts(m.created_at) - _now) < 5000)
+            );
+            // Avoid duplicate assistant message with same content
+            const _aiDup = filtered.some(m => m.role === 'assistant' && m.content === capturedAiContent);
+            if (!_aiDup) {
+              setMessages([...filtered, aiMsg]);
+            } else {
+              setMessages(filtered);
+            }
           }
           console.log("[Chat] onComplete: localAi:", localAiAccum.length, "localUser:", localUserContent.length, "sessionMsgs:", _sessionMessages.length, "tokens:", tokens);
-          // Save reply-to mapping
-          if (lastUserMsgRef.current) {
-            setReplyToMap(prev => ({
-              ...prev,
-              [aiMsgId]: { role: lastUserMsgRef.current!.role, content: lastUserMsgRef.current!.content || '' },
-            }));
-          }
           // Token-based billing: deduct credits based on actual token usage
           const currentAiMsgId = aiMsgId;
           if (tokens && tokens.total > 0) {
@@ -699,8 +1301,23 @@ export default function ChatDetailScreen() {
           if (capturedAiContent) {
             detectAndPollVideoTasks(capturedAiContent, aiMsgId);
           }
+          // Also associate pending video tasks (detected from tool results) with this AI message
+          if ((globalThis as any).__pendingVideoTasks && (globalThis as any).__pendingVideoTasks.length > 0) {
+            const pendingTaskIds = (globalThis as any).__pendingVideoTasks;
+            (globalThis as any).__pendingVideoTasks = [];
+            for (const taskId of pendingTaskIds) {
+              setVideoTasks(prev => {
+                const next = new Map(prev);
+                const existing = next.get(taskId);
+                if (existing && !existing.msgId) {
+                  next.set(taskId, { ...existing, msgId: aiMsgId });
+                }
+                return next;
+              });
+            }
+          }
           // Process next queued message
-          setTimeout(() => processQueue(), 500);
+          setTimeout(() => { const checkAndProcess = () => { if (!useChatStore.getState().isStreaming) { processQueue(); } else { setTimeout(checkAndProcess, 200); } }; checkAndProcess(); }, 300);
           // Determine the real conversation ID (prefer server-returned convId)
           const realConvId = convId || effectiveConvId;
           if (convId && !conversationId) {
@@ -711,7 +1328,7 @@ export default function ChatDetailScreen() {
             const pendingFiles = getPendingFiles();
             if (pendingFiles.length > 0) {
               for (const pf of pendingFiles) {
-                fetch('http://36.137.84.216:9091/project-files/api/files/upload', {
+                fetch('https://s.symsgf.xyz/project-files/api/files/upload', {
                   method: 'POST',
                   headers: {
                     'X-Conversation-Id': realConvId,
@@ -779,15 +1396,136 @@ export default function ChatDetailScreen() {
           }
           } catch (e) { console.error("[Chat] onComplete error:", e); }
         },
+        onMessageComplete: () => { /* streaming ends via onComplete */ },
         onError: (err) => {
-          setError(err.message);
-          finishStreaming(`msg_${Date.now()}`);
-          // Mark last user message as failed for retry
-          if (lastUserMsgRef.current) {
-            setFailedMessages(prev => new Set(prev).add(lastUserMsgRef.current!.id));
+          console.error('[Chat] SSE error FULL:', err.message, err.stack, 'queueTaskId:', queueTaskIdRef.current, 'convId:', effectiveConvId, 'botId:', currentBotId, 'receivedData:', sseReceivedData, 'completed:', sseCompleted);
+          // GUARD 1: If onComplete already fired, never start queue (prevents duplicate request)
+          if (sseCompleted) {
+            console.log('[ChatQueue] SSE already completed, ignoring error');
+            return;
+          }
+
+          const activateQueue = () => {
+            if (sseCompleted) { console.log('[ChatQueue] SSE completed during delay, skipping'); return; }
+            if (!queueTaskIdRef.current || !activeTaskRef.current) {
+              // No queue task available - show error
+              setError(err.message);
+              finishStreaming(`msg_${Date.now()}`);
+              if (lastUserMsgRef.current) {
+                setFailedMessages(prev => new Set(prev).add(lastUserMsgRef.current!.id));
+              }
+              return;
+            }
+            // Start standby queue task to fetch response
+            console.log('[ChatQueue] Starting queue task:', queueTaskIdRef.current);
+            chatQueueApi.start(queueTaskIdRef.current!).catch(e => console.warn('[ChatQueue] Start failed:', e));
+
+            // Poll queue for results
+            const pollQueue = async () => {
+              if (sseCompleted) return;
+              const task = activeTaskRef.current;
+              if (!task || task.taskId !== queueTaskIdRef.current) return;
+              try {
+                const status = await chatQueueApi.getStatus(queueTaskIdRef.current!);
+                if (status.status === 'completed') {
+                  const { events } = await chatQueueApi.getEvents(queueTaskIdRef.current!, task.lastEventIndex);
+                  for (const event of events) {
+                    task.lastEventIndex = event.index + 1;
+                    if (event.event_type === 'conversation.message.delta' && event.data?.content) {
+                      localAiAccum += event.data.content;
+                      appendDelta(event.data.content);
+                    }
+                  }
+                  const aiMsgId = status.chat_id || `msg_${Date.now()}`;
+                  if (localAiAccum) {
+                    const _cur = useChatStore.getState().messages;
+                    setMessages([..._cur.filter(m => m.id !== aiMsgId), {
+                      id: aiMsgId,
+                      conversation_id: effectiveConvId || '',
+                      role: 'assistant',
+                      type: 'text',
+                      content: localAiAccum,
+                      content_type: 'markdown',
+                      created_at: String(Date.now()),
+                      updated_at: String(Date.now()),
+                    }]);
+                  }
+                  useChatStore.setState({ isStreaming: false, streamingContent: '', streamingMessageId: null, activityStatus: '', generatingType: null });
+                  clearTask();
+                } else if (status.status === 'failed') {
+                  setError(status.error || 'Background task failed');
+                  finishStreaming(`msg_${Date.now()}`);
+                  clearTask();
+                  if (lastUserMsgRef.current) {
+                    setFailedMessages(prev => new Set(prev).add(lastUserMsgRef.current!.id));
+                  }
+                } else {
+                  const { events } = await chatQueueApi.getEvents(queueTaskIdRef.current!, task.lastEventIndex);
+                  for (const event of events) {
+                    task.lastEventIndex = event.index + 1;
+                    if (event.event_type === 'conversation.message.delta' && event.data?.content) {
+                      localAiAccum += event.data.content;
+                      appendDelta(event.data.content);
+                    }
+                  }
+                  ssePollingTimerRef.current = setTimeout(pollQueue, 3000);
+                }
+              } catch (pe) {
+                console.error('[ChatQueue] Poll error:', pe);
+                ssePollingTimerRef.current = setTimeout(pollQueue, 5000);
+              }
+            };
+            ssePollingTimerRef.current = setTimeout(pollQueue, 2000);
+          };
+
+          // GUARD 2: If SSE already received data, it was actively working.
+          // Wait 2s before starting queue - onComplete may still fire.
+          if (sseReceivedData) {
+            console.log('[ChatQueue] SSE had data before error, waiting 2s before queue');
+            setTimeout(activateQueue, 2000);
+          } else {
+            // No data received at all - start queue immediately
+            activateQueue();
           }
         },
-        onStatus: (status) => console.log('[SSE status]', status),
+        onStatus: (status) => {
+          console.log('[SSE status]', status);
+          if (!status) return;
+          const store = useChatStore.getState();
+          const current = store.activityStatus;
+          const hasRunningTool = store.toolCalls.some(tc => !tc.result);
+          const now = Date.now();
+          const sinceToolComplete = now - lastToolCompleteRef.current;
+          // Keep "X完成" visible for at least 1.2s so user sees the transition
+          const completionVisible = current.endsWith("完成") && sinceToolComplete < 1200;
+          if (status === "streaming") {
+            setActivityStatus("正在输入回复…");
+          } else if (status === "tool_running") {
+            return;
+          } else if (status === "thinking" || status === "thinking_deep" || status === "thinking_long") {
+            if (hasRunningTool) return;
+            const thinkingLabels: Record<string, string> = {
+              thinking: "正在思考理解…",
+              thinking_deep: "正在深度思考…",
+              thinking_long: "AI 正在努力分析中，请稍候…",
+            };
+            const label = thinkingLabels[status] || "正在思考理解…";
+            if (completionVisible) {
+              setTimeout(() => {
+                const s = useChatStore.getState();
+                if (!s.toolCalls.some(tc => !tc.result) && s.activityStatus.endsWith("完成")) {
+                  setActivityStatus(label);
+                }
+              }, 1200 - sinceToolComplete);
+              return;
+            }
+            setActivityStatus(label);
+          } else if (status === "complete") {
+            setActivityStatus("");
+          } else {
+            setActivityStatus(status);
+          }
+        },
       }
     );
   };
@@ -805,7 +1543,77 @@ export default function ChatDetailScreen() {
 
   const handleStop = () => {
     streamRef.current?.abort();
+    // Also cancel queue task if active
+    if (activeTaskRef.current) {
+      chatQueueApi.cancel(activeTaskRef.current.taskId).catch(e => console.warn('[ChatQueue] Cancel failed:', e));
+      clearTask();
+    }
     clearStreaming();
+  };
+
+  // Start polling for a specific video task
+  const startVideoPolling = (taskId: string, initialMsgId: string) => {
+    if (videoPollingRef.current.has(taskId)) return; // Already polling
+
+    setVideoTasks(prev => {
+      const next = new Map(prev);
+      const existing = next.get(taskId);
+      next.set(taskId, { taskId, status: 'polling', progress: existing?.progress || 0, msgId: existing?.msgId || initialMsgId, url: existing?.url });
+      return next;
+    });
+
+    // Poll every 10 seconds
+    const poll = async () => {
+      try {
+        const baseUrl = 'https://s.symsgf.xyz';
+        const resp = await fetch(`${baseUrl}/video/status/${taskId}`);
+        const data = await resp.json();
+        const parsed = typeof data.data === 'string' ? JSON.parse(data.data || '{}') : (data.data || data);
+        const status = parsed.status || 'unknown';
+        const videoUrl = parsed.video_url || '';
+        const progress = typeof parsed.progress === 'number' ? parsed.progress : (parseInt(String(parsed.progress)) || 0);
+        
+        console.log('[Video Poll]', taskId, 'status:', status, 'progress:', progress, 'url:', videoUrl ? 'yes' : 'no');
+
+        setVideoTasks(prev => {
+          const next = new Map(prev);
+          const existing = next.get(taskId);
+          next.set(taskId, { taskId, status, url: videoUrl, progress, msgId: existing?.msgId || initialMsgId });
+          return next;
+        });
+
+        if (status === 'completed' && videoUrl) {
+          const interval = videoPollingRef.current.get(taskId);
+          if (interval) { clearInterval(interval); videoPollingRef.current.delete(taskId); }
+        } else if (status === 'failed') {
+          const interval = videoPollingRef.current.get(taskId);
+          if (interval) { clearInterval(interval); videoPollingRef.current.delete(taskId); }
+        }
+      } catch (e) {
+        console.warn('[Video Poll] Failed:', e);
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 10000);
+    videoPollingRef.current.set(taskId, interval);
+
+    // Auto-stop after 5 minutes
+    setTimeout(() => {
+      const iv = videoPollingRef.current.get(taskId);
+      if (iv) {
+        clearInterval(iv);
+        videoPollingRef.current.delete(taskId);
+        setVideoTasks(prev => {
+          const next = new Map(prev);
+          const existing = next.get(taskId);
+          if (existing && existing.status !== 'completed') {
+            next.set(taskId, { ...existing, status: 'timeout' });
+          }
+          return next;
+        });
+      }
+    }, 300000);
   };
 
   // Detect video task_id in AI message and start polling
@@ -826,85 +1634,10 @@ export default function ChatDetailScreen() {
     }
     
     for (const taskId of taskIds) {
-      if (videoPollingRef.current.has(taskId)) continue; // Already polling
-      
-      setVideoTasks(prev => {
-        const next = new Map(prev);
-        next.set(taskId, { taskId, status: 'polling', progress: 0, msgId: aiMsgId });
-        return next;
-      });
-
-      // Poll every 10 seconds
-      const poll = async () => {
-        try {
-          const baseUrl = 'http://36.137.84.216:9092';
-          const resp = await fetch(`${baseUrl}/video/status/${taskId}`);
-          const data = await resp.json();
-          const parsed = typeof data.data === 'string' ? JSON.parse(data.data || '{}') : data;
-          const status = parsed.status || data.status || 'unknown';
-          const videoUrl = parsed.video_url || data.video_url || parsed.metadata?.url || data.metadata?.url || '';
-          const progress = parsed.progress || data.progress || 0;
-          
-          setVideoTasks(prev => {
-            const next = new Map(prev);
-            const existing = next.get(taskId);
-            next.set(taskId, { taskId, status, url: videoUrl, progress, msgId: existing?.msgId || aiMsgId });
-            return next;
-          });
-
-          if (status === 'completed' && videoUrl) {
-            // Stop polling
-            const interval = videoPollingRef.current.get(taskId);
-            if (interval) {
-              clearInterval(interval);
-              videoPollingRef.current.delete(taskId);
-            }
-            // Update the message content with the video URL if not already present
-            if (!aiContent.includes(videoUrl)) {
-              const videoTag = `<video src="${videoUrl}"></video>`;
-              const updatedContent = aiContent + '\n\n' + videoTag;
-              // Update message in store
-              const _cur = useChatStore.getState().messages;
-              const updated = _cur.map(m => 
-                m.id === aiMsgId ? { ...m, content: updatedContent } : m
-              );
-              setMessages(updated);
-            }
-          } else if (status === 'failed') {
-            const interval = videoPollingRef.current.get(taskId);
-            if (interval) {
-              clearInterval(interval);
-              videoPollingRef.current.delete(taskId);
-            }
-          }
-        } catch (e) {
-          console.warn('[Video Poll] Failed:', e);
-        }
-      };
-
-      // Start polling
-      poll(); // First check immediately
-      const interval = setInterval(poll, 10000);
-      videoPollingRef.current.set(taskId, interval);
-      
-      // Auto-stop after 5 minutes
-      setTimeout(() => {
-        const iv = videoPollingRef.current.get(taskId);
-        if (iv) {
-          clearInterval(iv);
-          videoPollingRef.current.delete(taskId);
-          setVideoTasks(prev => {
-            const next = new Map(prev);
-            const existing = next.get(taskId);
-            if (existing && existing.status !== 'completed') {
-              next.set(taskId, { ...existing, status: 'timeout' });
-            }
-            return next;
-          });
-        }
-      }, 300000);
+      startVideoPolling(taskId, aiMsgId);
     }
   };
+
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -923,6 +1656,11 @@ export default function ChatDetailScreen() {
         name: b.name || 'Unknown',
         icon_url: b.icon_url || b.avatar_url || '',
       })));
+      // Set avatar for current bot
+      const currentBot = result.items.find((b: any) => b.id === currentBotId);
+      if (currentBot) {
+        setBotAvatar(currentBot.icon_url || currentBot.avatar_url || '');
+      }
     } catch (e) {
       console.warn('[Chat] Failed to fetch bots:', e);
     }
@@ -931,6 +1669,8 @@ export default function ChatDetailScreen() {
   const handleBotSwitch = async (newBotId: string, newBotName: string) => {
     setCurrentBotId(newBotId);
     setBotName(newBotName);
+    const matched = availableBots.find((b: any) => b.id === newBotId);
+    if (matched) setBotAvatar(matched.icon_url || '');
     setShowBotSelector(false);
     // Create a new conversation with the new bot
     try {
@@ -947,9 +1687,26 @@ export default function ChatDetailScreen() {
     }
   };
 
+  if (debugError) {
+    return (
+      <View style={styles.container}>
+        <View style={{flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20}}>
+          <Ionicons name="alert-circle" size={48} color="#ef4444" />
+          <Text style={{fontSize: 16, fontWeight: 'bold', marginTop: 16, color: '#1f2937'}}>Error</Text>
+          <Text style={{fontSize: 12, color: '#6b7280', marginTop: 8, textAlign: 'center'}}>{debugError}</Text>
+          <TouchableOpacity onPress={() => { setDebugError(null); init(); }} style={{marginTop: 16, padding: 10, backgroundColor: '#8B5CF6', borderRadius: 8}}>
+            <Text style={{color: '#fff', fontSize: 14, fontWeight: '600'}}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   if (loading) {
     return (
       <View style={styles.container}>
+        <View style={{backgroundColor: '#ff9900', padding: 8, alignItems: 'center'}}>
+        </View>
         <SkeletonLoader type="chat-detail" visible={loading} />
       </View>
     );
@@ -957,6 +1714,12 @@ export default function ChatDetailScreen() {
 
   const renderItem = ({ item }: { item: ChatMessage }) => {
     if (!item || !item.id) return null;
+    if (item.role === 'assistant' && (!item.content || !item.content.trim())) return null;
+    // Filter out stale empty/partial AI messages from failed requests (only whitespace, newlines, or emoji)
+    if (item.role === 'assistant') {
+      const _clean = (item.content || '').replace(/[\s\u00a0\u200b\ufeff]/g, '').replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE0F}\u{200D}]/gu, '');
+      if (_clean.length === 0) return null;
+    }
     const isFailed = failedMessages.has(item.id);
     
     // Check if this message has an active video task
@@ -972,13 +1735,22 @@ export default function ChatDetailScreen() {
     return (
       <View>
         <MessageBubble 
-          message={displayItem} 
+          message={displayItem}
+          userName={userName}
+          botName={botName}
+          botAvatar={botAvatar}
+          userAvatar={userAvatar}
           isDark={isDark}
           onLongPress={handleLongPress} 
-          replyToMessage={replyToMap[item.id] || null}
           cost={messageCosts.get(item.id)}
         />
         {activeTask && <VideoGenerationOverlay status={activeTask.status} progress={activeTask.progress || 0} />}
+        {(() => {
+          const completedVideoTask = Array.from(videoTasks.values()).find(t => 
+            t.msgId === item.id && t.status === 'completed' && t.url
+          );
+          return completedVideoTask ? <CompletedVideoCard videoUrl={completedVideoTask.url} isDark={isDark} /> : null;
+        })()}
         {isFailed && item.role === 'user' && (
           <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: Spacing.md, marginTop: -2, marginBottom: 4 }}>
             <TouchableOpacity 
@@ -1013,53 +1785,49 @@ export default function ChatDetailScreen() {
       );
     }
 
-    // Case 2: Streaming text content - show message bubble (sanitize video tech info)
-    if (streamingContent) {
+    // Case 2: Streaming text content or tool calls active - show streaming text only
+    if (streamingContent || toolCalls.length > 0) {
       const sanitizedStreaming = /task_id|任务ID|进度[：:\s]*\d+%|视频已生成完成|视频正在生成中|正在尝试生成视频|视频生成服务暂时不可用|关于视频链接|替代方案|状态[：:]\s*(queued|processing)/i.test(streamingContent) 
         ? sanitizeVideoContent(streamingContent) 
         : streamingContent;
-      return (
-        <MessageBubble
-          message={{
-            id: streamingMessageId || '',
-            conversation_id: conversationId || id || '',
-            role: 'assistant',
-            type: 'text',
-            content: sanitizedStreaming,
-            content_type: 'markdown',
-            tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-            created_at: String(Date.now()),
-            updated_at: String(Date.now()),
-          }}
-          isDark={isDark}
-          replyToMessage={lastUserMsgRef.current ? { role: lastUserMsgRef.current.role, content: lastUserMsgRef.current.content || '' } : null}
-        />
-      );
+      if (streamingContent) {
+        return (
+          <View style={{ paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm }}>
+            <MessageBubble
+              message={{
+                id: streamingMessageId || '',
+                conversation_id: conversationId || id || '',
+                role: 'assistant',
+                type: 'text',
+                content: sanitizedStreaming,
+                content_type: 'markdown',
+                created_at: String(Date.now()),
+                updated_at: String(Date.now()),
+              }}
+              userName={userName}
+              botName={botName}
+              botAvatar={botAvatar}
+              userAvatar={userAvatar}
+              isDark={isDark}
+            />
+          </View>
+        );
+      }
+      // Tool calls running but no text yet - just return null, TypingIndicator handles it
+      return null;
     }
     
     // Show VideoGenerationOverlay during streaming if video task detected
     const streamingVideoTask = Array.from(videoTasks.values()).find(t => 
       t.msgId === streamingMessageId && (t.status === 'polling' || t.status === 'queued' || t.status === 'processing')
     );
-
-    // Case 3: Streaming started but no content yet - show thinking indicator
-    return (
-      <View style={{ paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm }}>
-        <View style={styles.thinkingRow}>
-          <View style={[styles.genAvatar, { backgroundColor: Colors.primary }]}>
-            <Ionicons name="sparkles" size={14} color="#fff" />
-          </View>
-          <View style={[styles.thinkingBubble, { backgroundColor: isDark ? '#1e293b' : Colors.backgroundSecondary }]}>
-            <ActivityIndicator size="small" color={Colors.primary} />
-            <Text style={styles.thinkingText}>正在思考理解…</Text>
-          </View>
-        </View>
-      </View>
-    );
+    // Case 3: No streaming content, no tool calls - just return null
+    // TypingIndicator handles all status display above the input box
+    return null;
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: isDark ? '#0f172a' : '#fff' }]}>
+    <View style={[styles.container, { backgroundColor: isDark ? '#0f172a' : '#fff', paddingTop: 0, paddingBottom: 0 }]}>
 
 
       {showSearch && (
@@ -1103,12 +1871,12 @@ export default function ChatDetailScreen() {
           ref={flatListRef}
           data={(searchQuery ? messages.filter((m: any) => m && (m.content || "").toLowerCase().includes(searchQuery.toLowerCase())) : messages).filter((m: any) => m && m.id)}
           renderItem={renderItem}
-          keyExtractor={(item) => item?.id || `msg_${Math.random()}`}
+          keyExtractor={(item, index) => item?.id || `msg_${index}`}
           contentContainerStyle={styles.listContent}
           ListFooterComponent={renderFooter}
           ListHeaderComponent={loadingMore ? (
             <View style={{ padding: 16, alignItems: 'center' }}>
-              <ActivityIndicator size="small" color={Colors.primary} />
+              {<ActivityIndicator size="small" color={Colors.primary} />}
               <Text style={{ fontSize: 12, color: Colors.textTertiary, marginTop: 4 }}>加载中...</Text>
             </View>
           ) : !hasMore && messages.length > 0 ? (
@@ -1120,7 +1888,21 @@ export default function ChatDetailScreen() {
           onEndReachedThreshold={Platform.OS === 'web' ? 0 : 0.3}
           showsVerticalScrollIndicator={false}
           inverted={false}
-          onScroll={Platform.OS === 'web' ? undefined : handleScroll}
+          extraData={videoTasks}
+          onScroll={handleScroll}
+          onContentSizeChange={() => {
+            if (isNearBottomRef.current) {
+              flatListRef.current?.scrollToEnd({ animated: false });
+            }
+          }}
+          onLayout={() => {
+            if (isNearBottomRef.current) {
+              flatListRef.current?.scrollToEnd({ animated: false });
+            }
+          }}
+          onScrollBeginDrag={() => {
+            // User started scrolling manually - don't force scroll until they go back to bottom
+          }}
           scrollEventThrottle={Platform.OS === 'web' ? 0 : 100}
         />
       )}
@@ -1133,7 +1915,7 @@ export default function ChatDetailScreen() {
       ) : null}
 
       {/* Scroll to bottom button */}
-      {showScrollBtn && Platform.OS !== 'web' && (
+      {showScrollBtn && (
         <TouchableOpacity
           onPress={scrollToBottom}
           style={{
@@ -1159,14 +1941,23 @@ export default function ChatDetailScreen() {
         </TouchableOpacity>
       )}
 
-      {/* Dynamic typing indicator above input */}
-      <TypingIndicator
-        statusText={activityStatus}
-        visible={isStreaming}
-        botName={botName}
-      />
-
-      <ChatInput
+      {/* Dynamic typing indicator + input with keyboard avoidance */}
+      <View style={{ marginBottom: keyboardHeight + (Platform.OS === 'ios' ? insets.bottom : 0) }}>
+        <TypingIndicator
+          statusText={activityStatus}
+          visible={isStreaming}
+          botName={botName}
+          currentTool={
+            // If AI is outputting text, hide tool badge so statusText ("正在输入回复…") shows
+            streamingContent
+              ? null
+              : // No text yet: show latest tool call (running or just completed)
+                toolCalls.length > 0
+                ? toolCalls[toolCalls.length - 1]
+                : null
+          }
+        />
+        <ChatInput
         onSend={handleSend}
         onStop={handleStop}
         isStreaming={isStreaming}
@@ -1177,6 +1968,8 @@ export default function ChatDetailScreen() {
         onClearQuote={() => setQuotedMessage(null)}
         initialText={prompt as string | undefined}
       />
+
+      </View>
 
       {/* Bot selector modal */}
       <Modal
@@ -1257,10 +2050,10 @@ export default function ChatDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
+  container: { flex: 1, backgroundColor: '#fff', paddingTop: Platform.OS === 'web' ? 0 : 0, paddingBottom: Platform.OS === 'web' ? 0 : Spacing.sm },
   loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyArea: { flex: 1, justifyContent: 'center' },
-  listContent: { paddingVertical: Spacing.md },
+  listContent: { paddingVertical: Spacing.md, paddingBottom: 120 },
   errorBar: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: '#fef2f2',
@@ -1351,3 +2144,14 @@ const styles = StyleSheet.create({
     color: Colors.textTertiary,
   },
 });
+// QUEUE_FIX_20260811
+
+
+export default function ChatDetailScreen() {
+  return (
+    <ChatErrorBoundary>
+      <ChatDetailScreenInner />
+    </ChatErrorBoundary>
+  );
+}
+

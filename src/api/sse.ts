@@ -59,116 +59,81 @@ export function sendMessageStream(
   };
 
   let aborted = false;
-  const controller = new AbortController();
+  let xhr: XMLHttpRequest | null = null;
   let lastChatId = '';
   let lastConversationId = '';
   let lastTokenUsage: TokenUsage | undefined;
   let fullAssistantContent = "";
+  let idleWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+  let thinkingPhase = 0;
+
+  const resetIdleWatchdog = () => {
+    if (idleWatchdog) clearTimeout(idleWatchdog);
+    idleWatchdog = setTimeout(() => {
+      if (!aborted) {
+        console.error('[SSE] Idle timeout 300s, aborting');
+        aborted = true;
+        try { xhr?.abort(); } catch {}
+        callbacks.onError(new Error('response timeout, retrying...'));
+      }
+    }, 300000);
+  };
 
   (async () => {
     try {
-      console.log('[SSE] POST', url);
+      console.log('[SSE] POST (xhr)', url);
 
-      const connectTimeout = setTimeout(() => {
-        if (!aborted) {
-          console.error('[SSE] Connect timeout (90s), aborting');
-          controller.abort();
-        }
-      }, 90000);
+      xhr = new XMLHttpRequest();
+      xhr.open('POST', url, true);
+      for (const k in headers) xhr.setRequestHeader(k, headers[k]);
+      xhr.responseType = 'text';
+      xhr.timeout = 300000;
 
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(reqBody),
-          signal: controller.signal,
-        });
-      } catch (fetchErr: any) {
-        clearTimeout(connectTimeout);
-        if (fetchErr.name === 'AbortError') {
-          throw new Error('连接超时，请检查网络后重试');
-        }
-        throw fetchErr;
-      }
-      clearTimeout(connectTimeout);
-
-      console.log('[SSE] response status:', response.status, response.statusText);
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => '');
-        throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
-      }
-
-      if (!response.body) {
-        const text = await response.text();
-        parseSseText(text, callbacks, lastChatId, lastConversationId);
-        return;
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
       let buffer = '';
       let currentEvent = '';
+      let lastProcessedIndex = 0;
+      let completed = false;
+      let connectTimerFired = false;
 
-      console.log('[SSE] Stream started, reading...');
+      const processChunk = () => {
+        const text = xhr.responseText;
+        if (text.length <= lastProcessedIndex) return;
+        buffer += text.slice(lastProcessedIndex);
+        lastProcessedIndex = text.length;
+        resetIdleWatchdog();
 
-      while (true) {
-        if (aborted) break;
-        const { done, value } = await reader.read();
-        if (done) {
-          console.log('[SSE] Stream ended, done=true');
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
         for (const line of lines) {
           if (aborted) break;
-
           const trimmed = line.trim();
-          if (!trimmed) {
-            currentEvent = '';
-            continue;
-          }
-
-          if (trimmed.startsWith('event:')) {
-            currentEvent = trimmed.slice(6).trim();
-            continue;
-          }
-
+          if (!trimmed) { currentEvent = ''; continue; }
+          if (trimmed.startsWith('event:')) { currentEvent = trimmed.slice(6).trim(); continue; }
           if (trimmed.startsWith('data:')) {
             const dataStr = trimmed.slice(5).trim();
             if (!dataStr || dataStr === '[DONE]') continue;
-
             try {
               const data = JSON.parse(dataStr);
               if (data.chat_id) lastChatId = data.chat_id;
               if (data.conversation_id) lastConversationId = data.conversation_id;
-              if (data.id && !lastChatId) {
-                if (currentEvent.startsWith('conversation.chat.')) {
-                  lastChatId = data.id;
-                }
-              }
 
-              // delta: only real content text triggers streaming
               if (currentEvent === 'conversation.message.delta') {
-                // Support both top-level and nested message_item
                 const dMsg = data.message_item || data;
                 const dType = (dMsg.type || dMsg.message_type || '').toLowerCase();
-                // Only process answer-type messages; skip function_call/tool_response/verbose fragments
                 const isAnswerType = !dType || dType === 'answer' || dType === 'text';
                 if (isAnswerType && dMsg.content) {
                   callbacks.onDelta(dMsg.content);
-                  if (dMsg.role === "assistant") fullAssistantContent += dMsg.content;
+                  if (dMsg.role === 'assistant') fullAssistantContent += dMsg.content;
+                  if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
                   callbacks.onStatus?.('streaming');
                 }
-                // Reasoning deltas do NOT change status - thinking is already set at stream start.
-                // Triggering onStatus('thinking') here would override tool status ("正在搜索...") during tool execution.
-                // We only update status when actual answer content arrives (onStatus('streaming')).
-                // Detect tool_calls in delta (some formats)
+                const dRole = (dMsg.role || '').toLowerCase();
+                const hasReasoningText = !!(dMsg.reasoning_content || dMsg.reasoning || '');
+                if (hasReasoningText && !dMsg.content && (dRole === 'assistant' || dRole === 'reasoning')) {
+                  callbacks.onStatus?.('reasoning');
+                }
                 const tcList = dMsg.tool_calls || data.tool_calls;
                 if (tcList && Array.isArray(tcList)) {
                   for (const tc of tcList) {
@@ -181,9 +146,7 @@ export function sendMessageStream(
                   }
                 }
               }
-              // message.completed: token usage + function_call + tool_response
               else if (currentEvent === 'conversation.message.completed') {
-                // Support both top-level and nested message_item
                 const dMsg = data.message_item || data;
                 if (dMsg.role === 'assistant' && (dMsg.ext || data.meta_data)) {
                   callbacks.onMessageComplete?.();
@@ -202,7 +165,6 @@ export function sendMessageStream(
                   const inputTokens = Math.round(outputTokens * 2);
                   lastTokenUsage = { input: inputTokens, output: outputTokens, total: inputTokens + outputTokens };
                 }
-                // function_call arrives as a completed message (type=function_call, role=assistant)
                 const msgType = dMsg.type || dMsg.message_type || data.type || data.message_type || '';
                 if (msgType === 'function_call') {
                   try {
@@ -217,7 +179,6 @@ export function sendMessageStream(
                     callbacks.onStatus?.('tool_running');
                   } catch (e) { console.warn('[SSE] function_call parse error:', e); }
                 }
-                // tool_response: mark previous tool call as done
                 if (msgType === 'tool_response') {
                   try {
                     let toolName = '';
@@ -228,39 +189,88 @@ export function sendMessageStream(
                     else if (data.meta_data?.tool_name) toolName = data.meta_data.tool_name;
                     else if (extObj.tool_name) toolName = extObj.tool_name;
                     else if (extObj.plugin) toolName = extObj.plugin;
-                    // Pass empty toolName - appendToolCall will match the most recent unfinished tool call
                     callbacks.onToolCall?.(toolName, '', content);
+                    callbacks.onStatus?.('tool_result');
                   } catch {}
                 }
-              }
-              else if (currentEvent === 'conversation.chat.completed') {
-                try {
-                  if (data.usage) {
-                    const totalTokens = (data.usage.token_count || 0) || ((data.usage.input_count || 0) + (data.usage.output_count || 0));
-                    const inputTokens = data.usage.input_count || 0;
-                    const outputTokens = data.usage.output_count || 0;
-                    if (totalTokens > 0) {
-                      lastTokenUsage = { input: inputTokens, output: outputTokens, total: totalTokens };
-                    }
-                  }
-                } catch (e) {
-                  console.warn('[SSE] Failed to parse chat completed usage:', e);
+                if (msgType === 'answer' || (dMsg.role === 'assistant' && !msgType && dMsg.content && typeof dMsg.content === 'string')) {
+                  if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+                  callbacks.onStatus?.('streaming');
                 }
+              }
+              else if (currentEvent === 'conversation.chat.created' || currentEvent === 'conversation.chat.in_progress') {
+                callbacks.onStatus?.('thinking');
+              }
+              else if (currentEvent === 'conversation.chat.completed' || currentEvent === 'conversation.message.completed') {
+                // token usage already captured above
               }
               else if (currentEvent === 'conversation.chat.failed') {
                 callbacks.onError(new Error(data.last_error?.msg || '聊天处理失败'));
                 return;
+              }
+              else if (currentEvent === 'conversation.stream.done') {
+                callbacks.onStatus?.('complete');
               }
             } catch (parseErr) {
               console.warn('[SSE] Parse error for data:', dataStr.substring(0, 100));
             }
           }
         }
-      }
+      };
 
-      console.log('[SSE] Complete. chatId:', lastChatId, 'convId:', lastConversationId);
-      callbacks.onComplete(lastChatId, lastConversationId, lastTokenUsage);
-      callbacks.onStatus?.('complete');
+      xhr.onprogress = processChunk;
+
+      xhr.onload = () => {
+        if (completed) return;
+        completed = true;
+        processChunk(); // final flush
+        if (idleWatchdog) clearTimeout(idleWatchdog);
+        if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+        console.log('[SSE] Complete. chatId:', lastChatId, 'convId:', lastConversationId);
+        callbacks.onComplete(lastChatId, lastConversationId, lastTokenUsage);
+        callbacks.onStatus?.('complete');
+      };
+
+      xhr.onerror = () => {
+        if (completed) return;
+        completed = true;
+        if (idleWatchdog) clearTimeout(idleWatchdog);
+        if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+        console.error('[SSE] XHR network error');
+        callbacks.onError(new Error('网络连接失败'));
+      };
+
+      xhr.ontimeout = () => {
+        if (completed) return;
+        completed = true;
+        connectTimerFired = true;
+        if (idleWatchdog) clearTimeout(idleWatchdog);
+        if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+        console.error('[SSE] XHR timeout');
+        callbacks.onError(new Error('连接超时，请检查网络后重试'));
+      };
+
+      xhr.onabort = () => {
+        if (completed) return;
+        completed = true;
+        if (idleWatchdog) clearTimeout(idleWatchdog);
+        if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+        console.log('[SSE] XHR aborted');
+        callbacks.onError(new Error('连接已中断'));
+      };
+
+      resetIdleWatchdog();
+      thinkingPhase = 0;
+      thinkingTimer = setInterval(() => {
+        thinkingPhase++;
+        if (thinkingPhase === 1) callbacks.onStatus?.('thinking');
+        else if (thinkingPhase === 2) callbacks.onStatus?.('thinking_deep');
+        else if (thinkingPhase >= 3) callbacks.onStatus?.('thinking_long');
+      }, 12000);
+
+      console.log('[SSE] Stream starting (xhr)...');
+      xhr.send(JSON.stringify(reqBody));
+
     } catch (error: any) {
       if (error.name === 'AbortError') {
         callbacks.onError(new Error('连接已中断'));
@@ -274,7 +284,9 @@ export function sendMessageStream(
   return {
     abort: () => {
       aborted = true;
-      controller.abort();
+      if (idleWatchdog) clearTimeout(idleWatchdog);
+      if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+      try { xhr?.abort(); } catch {}
     },
   };
 }

@@ -35,9 +35,18 @@ export const creditsApi = {
   redeemCard: (userId: string, cardCode: string): Promise<CardRedeemResponse> =>
     creditsClient.post('/token-api/api/card/redeem', { user_id: userId, card_code: cardCode }).then(r => r.data.data || r.data),
 
-  // 充值
-  recharge: (userId: string, amount: number): Promise<any> =>
-    creditsClient.post('/token-api/api/recharge', { user_id: userId, amount }).then(r => r.data),
+  // ============ 在线充值（网程PAY：微信/支付宝）============
+  // 充值套餐列表
+  getPayPlans: (): Promise<{ plans: Array<{ id: string; money: string; credits: string; label: string }> }> =>
+    creditsClient.post('/token-api/api/pay/plans', {}).then(r => r.data),
+
+  // 创建支付订单，返回跳转支付的 pay_url 和订单号
+  createPay: (userId: string, plan: string, payType: 'alipay' | 'wxpay'): Promise<{ status: string; pay_url: string; out_trade_no: string }> =>
+    creditsClient.post('/token-api/api/pay/create', { user_id: userId, plan, pay_type: payType }).then(r => r.data),
+
+  // 轮询订单是否已支付到账
+  getPayStatus: (outTradeNo: string): Promise<{ status: string; paid: boolean }> =>
+    creditsClient.get(`/token-api/api/pay/status/${outTradeNo}`).then(r => r.data),
 
   // 按 token 数量扣费：每 200 token 扣 1 积分
   deductByTokens: (userId: string, totalTokens: number, modelName?: string): Promise<{

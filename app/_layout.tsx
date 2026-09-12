@@ -5,6 +5,7 @@ import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from 'rea
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore } from '../src/store/auth';
+import { queueManager } from '../src/queue/queueTaskManager';
 import { Colors } from '../src/constants/theme';
 
 
@@ -105,6 +106,7 @@ export default function RootLayout() {
 
   useEffect(() => {
     restore();
+    queueManager.init();
   }, []);
 
   return <RootErrorBoundary><RootLayoutNav /></RootErrorBoundary>;

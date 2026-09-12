@@ -1,0 +1,189 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, ActivityIndicator, Animated, Platform } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Colors } from '../constants/theme';
+
+/**
+ * 任务实时状态卡片
+ * 在聊天消息流内展示，随后端 SSE 工具事件实时切换阶段：
+ *   思考理解 → 调用工具(生成图片/视频/搜索...) → 接收结果 → 输入回复
+ * 带实时已用时计时，让用户对长任务进度有明确感知。
+ */
+
+export interface ToolStep {
+  id: string;
+  name: string;
+  label: string;
+  done: boolean;
+}
+
+interface TaskStatusCardProps {
+  status: string;          // 当前 activityStatus（中文短语）
+  tools: ToolStep[];       // 已触发的工具调用步骤
+  botName?: string;
+  isDark?: boolean;
+}
+
+// 工具名 → 中文动作 + 图标 + 主题色
+export function getToolMeta(toolName: string): { label: string; icon: string; color: string } {
+  const n = (toolName || '').toLowerCase();
+  const isImgUnderstand = n.includes('understand_image') || n.includes('analyze_image') || n.includes('vision') || n.includes('ocr') || n.includes('describe_image');
+  const isImgSearch = n.includes('search_image') || n.includes('image_search');
+  const isScreenshot = n.includes('screenshot') || n.includes('take_screenshot') || n.includes('capture_screen');
+  const isBgRemove = n.includes('remove_background') || n.includes('rembg') || n.includes('cutout');
+  const isVideoStatus = n.includes('video_status') || n.includes('probe_video') || n.includes('video_query') || n.includes('video_result');
+  const isDeleteConv = n.includes('delete_conversation') || n.includes('delete_all');
+  const isListConv = n.includes('list_conversation');
+  const isImgGen = !isImgUnderstand && !isImgSearch && !isScreenshot && !isBgRemove &&
+    (n.includes('generate_image') || n.includes('text2image') || n.includes('txt2img') || n.includes('draw') || n.includes('paint') || n.includes('dall') || n.includes('gen_image'));
+  const isVideoGen = !isVideoStatus &&
+    (n.includes('generate_video') || n.includes('text2video') || n.includes('txt2vid') || n.includes('animate') || n.includes('sora') || n.includes('gen_video') || n.includes('video_generate'));
+
+  if (n.includes('ui_build')) return { label: '构建安装包', icon: 'cube-outline', color: '#10b981' };
+  if (n.includes('ui_status')) return { label: '查询构建进度', icon: 'time-outline', color: '#10b981' };
+  if (n.includes('run_command')) return { label: '运行代码', icon: 'terminal-outline', color: '#10b981' };
+  if (n.includes('script_execute')) return { label: '执行脚本', icon: 'code-slash', color: '#10b981' };
+  if (n.includes('file_list') || n.includes('list_files')) return { label: '浏览文件', icon: 'folder-open-outline', color: '#64748b' };
+  if (n.includes('upload_file')) return { label: '上传文件', icon: 'cloud-upload-outline', color: '#64748b' };
+  if (n.includes('search_papers')) return { label: '搜索论文', icon: 'book-outline', color: '#3b82f6' };
+  if (n.includes('synthesize_speech')) return { label: '合成语音', icon: 'mic-outline', color: '#8b5cf6' };
+  if (n.includes('nikto_scan') || n.includes('nmap_scan')) return { label: '安全扫描', icon: 'shield-checkmark-outline', color: '#ef4444' };
+  if (n.includes('monitor_requests')) return { label: '监听网络请求', icon: 'radio-outline', color: '#f59e0b' };
+  if (n.includes('get_weather')) return { label: '查询天气', icon: 'partly-sunny-outline', color: '#3b82f6' };
+  if (n.includes('get_task_stats')) return { label: '查询任务状态', icon: 'stats-chart-outline', color: '#64748b' };
+  if (n.includes('github_build')) return { label: 'GitHub构建', icon: 'logo-github', color: '#64748b' };
+  if (n.includes('save_memory')) return { label: '保存记忆', icon: 'save-outline', color: '#8b5cf6' };
+  if (n.includes('create_scheduled_task')) return { label: '设定定时任务', icon: 'alarm-outline', color: '#f59e0b' };
+  if (n.includes('list_scheduled_tasks')) return { label: '查看定时任务', icon: 'list-outline', color: '#0ea5e9' };
+  if (n.includes('delete_scheduled_task')) return { label: '删除定时任务', icon: 'trash-outline', color: '#ef4444' };
+  if (n.includes('get_memories') || n.includes('search_memory')) return { label: '检索记忆', icon: 'brain-outline', color: '#8b5cf6' };
+  if (isImgGen) return { label: '生成图片', icon: 'image', color: '#f59e0b' };
+  if (isVideoGen) return { label: '生成视频', icon: 'videocam', color: '#ef4444' };
+  if (isVideoStatus) return { label: '查询视频进度', icon: 'time-outline', color: '#ef4444' };
+  if (isImgUnderstand) return { label: '识别图片', icon: 'eye-outline', color: '#8b5cf6' };
+  if (isImgSearch) return { label: '搜索图片', icon: 'images-outline', color: '#3b82f6' };
+  if (isScreenshot) return { label: '截取屏幕', icon: 'camera-outline', color: '#64748b' };
+  if (isBgRemove) return { label: '处理图片', icon: 'cut-outline', color: '#f59e0b' };
+  if (isDeleteConv) return { label: '删除会话', icon: 'trash-outline', color: '#ef4444' };
+  if (isListConv) return { label: '查询会话', icon: 'chatbubbles-outline', color: '#64748b' };
+  if (n.includes('web_search') || n.includes('search')) return { label: '搜索资料', icon: 'search', color: '#3b82f6' };
+  if (n.includes('code') || n.includes('execute') || n.includes('run_code') || n.includes('python')) return { label: '执行代码', icon: 'code-slash', color: '#10b981' };
+  if (n.includes('read') || n.includes('read_file')) return { label: '读取文件', icon: 'document-outline', color: '#64748b' };
+  if (n.includes('write') || n.includes('create_file')) return { label: '创建文件', icon: 'create-outline', color: '#64748b' };
+  if (n.includes('edit') || n.includes('modify') || n.includes('update')) return { label: '修改内容', icon: 'construct-outline', color: '#64748b' };
+  if (n.includes('upload') || n.includes('download') || n.includes('file')) return { label: '文件传输', icon: 'folder-outline', color: '#64748b' };
+  if (n.includes('translate')) return { label: '翻译', icon: 'language-outline', color: '#64748b' };
+  if (n.includes('summarize') || n.includes('summary')) return { label: '总结归纳', icon: 'list-outline', color: '#64748b' };
+  if (n.includes('workflow')) return { label: '执行工作流', icon: 'git-network-outline', color: '#8b5cf6' };
+  if (n.includes('memory') || n.includes('presign') || n.includes('upload_url')) return { label: '调用工具', icon: 'hammer-outline', color: '#8b5cf6' };
+  return { label: '调用工具', icon: 'hammer-outline', color: '#8b5cf6' };
+}
+
+function fmtElapsed(sec: number): string {
+  if (sec < 60) return `${sec} 秒`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s ? `${m} 分 ${s} 秒` : `${m} 分钟`;
+}
+
+export const TaskStatusCard: React.FC<TaskStatusCardProps> = ({ status, tools, botName, isDark }) => {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef<number>(Date.now());
+  const pulse = useRef(new Animated.Value(1)).current;
+
+  // 实时计时
+  useEffect(() => {
+    startRef.current = Date.now();
+    setElapsed(0);
+    const t = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // 呼吸动画
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.55, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  const runningTool = [...tools].reverse().find(t => !t.done);
+  const phaseText = status && status.trim() ? status : '正在思考理解…';
+  // 主色：正在跑工具时用工具色，思考时用主题紫
+  const accent = runningTool ? getToolMeta(runningTool.name).color : Colors.primary;
+  const phaseIcon = runningTool ? getToolMeta(runningTool.name).icon : 'sparkles';
+
+  return (
+    <View style={{ flexDirection: 'row', paddingHorizontal: 12, marginVertical: 4 }}>
+      {/* AI 头像，与消息流对齐 */}
+      <View style={{
+        width: 36, height: 36, borderRadius: 18, backgroundColor: isDark ? '#334155' : '#6b7280',
+        justifyContent: 'center', alignItems: 'center', marginRight: 8, marginTop: 2,
+      }}>
+        <Ionicons name="person" size={18} color="#fff" />
+      </View>
+
+      <View style={{
+        flex: 1,
+        backgroundColor: isDark ? '#1e293b' : '#ffffff',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: isDark ? '#334155' : 'rgba(0,0,0,0.06)',
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        ...Platform.select({
+          web: { boxShadow: '0 2px 10px rgba(0,0,0,0.05)' } as any,
+          default: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2 },
+        }),
+      }}>
+        {/* 当前阶段 */}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <ActivityIndicator size="small" color={accent} style={{ marginRight: 8 }} />
+          <Ionicons name={phaseIcon as any} size={15} color={accent} style={{ marginRight: 5 }} />
+          <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: isDark ? '#f1f5f9' : '#1f2937' }} numberOfLines={1}>
+            {phaseText}
+          </Text>
+          <Text style={{ fontSize: 12, color: isDark ? '#94a3b8' : '#9ca3af', marginLeft: 6 }}>
+            {fmtElapsed(elapsed)}
+          </Text>
+        </View>
+
+        {/* 工具步骤列表 */}
+        {tools.length > 0 && (
+          <View style={{ marginTop: 8, gap: 5 }}>
+            {tools.map((t) => {
+              const meta = getToolMeta(t.name);
+              return (
+                <View key={t.id} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  {t.done ? (
+                    <Ionicons name="checkmark-circle" size={14} color={Colors.success} style={{ marginRight: 6 }} />
+                  ) : (
+                    <Animated.View style={{ opacity: pulse, marginRight: 6 }}>
+                      <Ionicons name={meta.icon as any} size={14} color={meta.color} />
+                    </Animated.View>
+                  )}
+                  <Text style={{ fontSize: 13, color: t.done ? (isDark ? '#94a3b8' : '#9ca3af') : (isDark ? '#cbd5e1' : '#4b5563') }}>
+                    {t.done ? `${t.label}完成` : `正在${t.label}…`}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* 长任务提示 */}
+        {elapsed >= 8 && (
+          <Text style={{ marginTop: 8, fontSize: 12, color: isDark ? '#64748b' : '#b0b4bb' }}>
+            任务进行中，您可以先去忙别的，完成后回复会自动显示
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+};

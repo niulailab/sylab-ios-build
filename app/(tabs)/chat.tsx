@@ -10,6 +10,7 @@ import { filesApi } from '../../src/api/files';
 import { useAuthStore } from '../../src/store/auth';
 import { Storage } from '../../src/utils/storage';
 import { AppEvents, subscribe, emit } from '../../src/utils/events';
+import { queueManager } from '../../src/queue/queueTaskManager';
 import { botApi } from '../../src/api/bot';
 import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonLoader } from '../../src/components/SkeletonLoader';
@@ -149,6 +150,20 @@ export default function ChatListScreen() {
   const { isDark } = useTheme();
   const [searchText, setSearchText] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [activeConvIds, setActiveConvIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    const syncActive = () => setActiveConvIds(queueManager.getActiveConversationIds());
+    syncActive();
+    const unsub1 = subscribe(AppEvents.CHAT_TASK_UPDATED, syncActive);
+    const unsub2 = subscribe(AppEvents.CHAT_TASK_UPDATED, () => {
+      setTimeout(() => {
+        setActiveConvIds(queueManager.getActiveConversationIds());
+        try { fetchConversations(); } catch (e) {}
+      }, 1500);
+    });
+    return () => { unsub1(); unsub2(); };
+  }, []);
   const creatingRef = useRef(false);
 
   const showAlert = (title: string, message: string) => {
@@ -333,9 +348,15 @@ export default function ChatListScreen() {
             </Text>
           </View>
           <View style={styles.bottomRow}>
-            <Text style={styles.lastMsg} numberOfLines={1}>
-              {item.lastMessagePreview}
-            </Text>
+            {activeConvIds.includes(item.id) ? (
+              <Text style={[styles.lastMsg, { color: Colors.primary, fontWeight: '600' }]} numberOfLines={1}>
+                正在回复…
+              </Text>
+            ) : (
+              <Text style={styles.lastMsg} numberOfLines={1}>
+                {item.lastMessagePreview}
+              </Text>
+            )}
           </View>
         </View>
       </TouchableOpacity>

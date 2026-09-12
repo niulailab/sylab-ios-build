@@ -82,12 +82,33 @@ export const useChatStore = create<ChatState>((set) => ({
       const isVideoStatus = l.includes("video_status") || l.includes("probe_video");
       const isClick = l.includes("click_element") || (l.includes("click") && !l.includes("doubleclick"));
       const isFill = l.includes("fill_form") || l.includes("fill");
-      const isGetContent = l.includes("get_content") || l.includes("browser/content");
+      // 收紧：只有浏览器自动化类工具才标"读取网页"，避免普通聊天里内部工具（含 get_content 字样）被误判
+      const isBrowserTool = l.includes("browser") &&
+        (l.includes("get_content") || l.includes("getcontent") || l.includes("/content") || l.includes("read_page") || l.includes("page_content"));
+      const isGetContent = isBrowserTool || l === "get_content" || l.includes("browser_use_get_content");
       const isHttp = l.includes("http_request");
       const isImgGen = !isImgUnderstand && !isImgSearch && !isScreenshot && !isBgRemove &&
         (l.includes("generate_image") || l.includes("text2image") || l.includes("txt2img") || l.includes("draw") || l.includes("paint") || l.includes("dall"));
       const isVideoGen = !isVideoStatus &&
-        (l.includes("generate_video") || l.includes("text2video") || l.includes("txt2vid") || l.includes("animate") || l.includes("sora"));
+        (l.includes("generate_video") || l.includes("video_generate") || l.includes("text2video") || l.includes("txt2vid") || l.includes("animate") || l.includes("sora"));
+      if (l.includes("ui_build")) return "构建发布";
+      if (l.includes("ui_status")) return "查询构建进度";
+      if (l.includes("run_command")) return "运行代码";
+      if (l.includes("script_execute")) return "执行脚本";
+      if (l.includes("file_list") || l.includes("list_files")) return "浏览文件";
+      if (l.includes("upload_file")) return "上传文件";
+      if (l.includes("search_papers")) return "搜索论文";
+      if (l.includes("synthesize_speech")) return "合成语音";
+      if (l.includes("nikto_scan") || l.includes("nmap_scan")) return "安全扫描";
+      if (l.includes("monitor_requests")) return "监听网络请求";
+      if (l.includes("get_weather")) return "查询天气";
+      if (l.includes("get_task_stats")) return "查询任务状态";
+      if (l.includes("github_build")) return "GitHub构建";
+      if (l.includes("save_memory")) return "保存记忆";
+if (l.includes("create_scheduled_task")) return "设定定时任务";
+      if (l.includes("list_scheduled_tasks")) return "查看定时任务";
+      if (l.includes("delete_scheduled_task")) return "删除定时任务";
+      if (l.includes("get_memories") || l.includes("search_memory")) return "检索记忆";
       if (isImgGen) return "生成图片";
       if (isVideoGen) return "生成视频";
       if (isImgUnderstand) return "识别图片";

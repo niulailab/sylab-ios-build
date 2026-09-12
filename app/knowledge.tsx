@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { knowledgeApi } from '../src/api/knowledge';
 import { SkeletonLoader } from '../src/components/SkeletonLoader';
@@ -17,6 +18,7 @@ interface KnowledgeItem {
 
 export default function KnowledgeScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [items, setItems] = useState<KnowledgeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -87,7 +89,7 @@ export default function KnowledgeScreen() {
 
   if (loading) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { paddingTop: insets.top }]}>
         <View style={styles.header}>
           <View style={{ width: 36 }} />
           <View style={{ height: 16, width: 80, backgroundColor: '#E8E8E8', borderRadius: 12 }} />
@@ -99,7 +101,7 @@ export default function KnowledgeScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color={Colors.text} />

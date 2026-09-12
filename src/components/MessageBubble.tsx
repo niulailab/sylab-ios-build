@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Image, TouchableOpacity, Platform } from 'react
 
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { ZoomableImage } from './ImageLightbox';
 import { Ionicons } from '@expo/vector-icons';
 import type { ChatMessage, ToolCall } from '../types/api';
 
@@ -10,6 +11,11 @@ import type { ChatMessage, ToolCall } from '../types/api';
 // Convert HTTP server URLs to HTTPS tunnel for iOS ATS
 function normalizeImageUrl(url: string): string {
   if (!url) return url;
+  // 后端 MinIO 内网地址（头像、生成图片等）→ 公网代理路径，去掉签名参数
+  const minioM = url.match(/https?:\/\/[^/]*minio[^/]*\/(opencoze\/.*)$/i);
+  if (minioM) {
+    return `https://s.symsgf.xyz/minio-files/${minioM[1]}`.split('?')[0];
+  }
   return url
     .replace(/http:\/\/36\.137\.84\.216:9091/g, "https://s.symsgf.xyz")
     .replace(/http:\/\/127\.0\.0\.1:9091/g, "https://s.symsgf.xyz")
@@ -92,8 +98,17 @@ const formatTime = (createdAt: string | number): string => {
 
 // Avatar component - shows image or fallback colored circle
 const AvatarCircle: React.FC<{ url?: string; isUser?: boolean }> = ({ url, isUser }) => {
-  if (url && url.trim().length > 0) {
-    return <Image source={{ uri: url }} style={headerStyles.avatar} />;
+  const [imgError, setImgError] = React.useState(false);
+  const fixed = url ? normalizeImageUrl(url) : '';
+  const validUrl = !!fixed && fixed.trim().length > 0 && !imgError;
+  if (validUrl) {
+    return (
+      <Image
+        source={{ uri: fixed }}
+        style={headerStyles.avatar}
+        onError={() => setImgError(true)}
+      />
+    );
   }
   const bgColor = isUser ? '#5b9bd5' : '#757575';
   return (
@@ -141,7 +156,7 @@ const webSelectionCSS = Platform.OS === 'web' ? `
   .bubble-text { user-select: text !important; -webkit-user-select: text !important; cursor: text; }
 ` : '';
 
-export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isDark, userName, botName, botAvatar, userAvatar, onLongPress, replyToMessage, cost }) => {
+export const MessageBubble = React.memo<MessageBubbleProps>(({ message, isDark, userName, botName, botAvatar, userAvatar, onLongPress, replyToMessage, cost }) => {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isTool = message.role === 'tool';
@@ -170,21 +185,41 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isDark, u
   const textColor = isDark ? Colors.textInverse : Colors.text;
 
   const bubbleContent = (
-    <View style={{ alignItems: isUser ? 'flex-end' : 'flex-start' }}>
+    <View style={{ alignItems: isUser ? 'flex-end' : 'flex-start', width: '100%', minWidth: 0, flexShrink: 1 }}>
       {replyToMessage && !isUser && (
-        <View style={{ maxWidth: '85%', paddingHorizontal: Spacing.md }}>
+        <View style={{ width: '100%', maxWidth: '100%', minWidth: 0, flexShrink: 1, paddingHorizontal: Spacing.md }}>
           <QuotePreview replyTo={replyToMessage} isDark={isDark} />
         </View>
       )}
-      <MessageHeader role={message.role} createdAt={message.created_at} isDark={isDark} userName={userName} botName={botName} isUser={isUser} botAvatar={botAvatar} userAvatar={userAvatar} />
+      {onLongPress ? (
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onLongPress={() => onLongPress(message)}
+          delayLongPress={400}
+          style={{ alignSelf: isUser ? 'flex-end' : 'flex-start' }}
+        >
+          <MessageHeader role={message.role} createdAt={message.created_at} isDark={isDark} userName={userName} botName={botName} isUser={isUser} botAvatar={botAvatar} userAvatar={userAvatar} />
+        </TouchableOpacity>
+      ) : (
+        <MessageHeader role={message.role} createdAt={message.created_at} isDark={isDark} userName={userName} botName={botName} isUser={isUser} botAvatar={botAvatar} userAvatar={userAvatar} />
+      )}
       <View style={[
         styles.bubble,
         isUser ? styles.userBubble : styles.assistantBubble,
         { backgroundColor: bubbleBg },
       ]}>
-        {message.content_type === 'image_url' && message.content ? (
-          <Image source={{ uri: normalizeImageUrl(message.content) }} style={styles.messageImage} />
-        ) : isUser ? (
+        {message.content_type === 'image_url' && message.content ? (() => {
+          const _c = message.content || '';
+          const _imgMatch = _c.match(/^\[IMG:([^\]]+)\](.*)$/s);
+          const _imgUrl = _imgMatch ? _imgMatch[1] : _c;
+          const _imgText = _imgMatch ? _imgMatch[2].trim() : '';
+          return (
+            <View>
+              <Image source={{ uri: normalizeImageUrl(_imgUrl) }} style={styles.messageImage} />
+              {_imgText ? <Text style={[styles.userText, { color: textColor, marginTop: 6 }]} selectable>{_imgText}</Text> : null}
+            </View>
+          );
+        })() : isUser ? (
           <Text style={[styles.userText, { color: textColor }]} selectable>{message.content}</Text>
         ) : (
           <MarkdownRenderer content={message.content} isDark={isDark} />
@@ -199,31 +234,24 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, isDark, u
     </View>
   );
 
-  if (onLongPress) {
-    return (
-      <View style={[styles.row, { justifyContent: isUser ? 'flex-end' : 'flex-start' }]}>
-        <TouchableOpacity activeOpacity={0.8} onLongPress={() => onLongPress(message)} delayLongPress={400} style={[styles.bubbleWrapper, { maxWidth: '85%', alignItems: isUser ? 'flex-end' : 'flex-start' }]}>
-          {bubbleContent}
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
+  // 注意：正文气泡不能被带 onLongPress 的 Touchable 包裹，
+  // 否则长按手势与 selectable Text 冲突，只能整体复制、无法局部选词。
+  // 消息操作菜单改由头部（头像/名字/时间行）长按触发。
   return (
     <View style={[styles.row, { justifyContent: isUser ? 'flex-end' : 'flex-start' }]}>
-      <View style={[styles.bubbleWrapper, { maxWidth: '85%', alignItems: isUser ? 'flex-end' : 'flex-start' }]}>
+      <View style={[styles.bubbleWrapper, { maxWidth: isUser ? '85%' : '96%', alignItems: isUser ? 'flex-end' : 'flex-start' }]}>
         {bubbleContent}
       </View>
     </View>
   );
-};
+});
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', marginVertical: 6, paddingHorizontal: 16 },
   avatar: { width: 30, height: 30, borderRadius: 15, justifyContent: 'center', alignItems: 'center', marginHorizontal: 6, flexShrink: 0 },
   avatarText: { color: '#fff', fontSize: FontSize.xs, fontWeight: '600' },
-  bubble: { flexShrink: 1, maxWidth: '96%', paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md },
-  bubbleWrapper: { flexShrink: 1 },
+  bubble: { flexShrink: 1, flexGrow: 0, width: '100%', minWidth: 220, maxWidth: '96%', paddingHorizontal: 12, paddingVertical: 8, borderRadius: BorderRadius.md },
+  bubbleWrapper: { flexShrink: 1, flexGrow: 0, minWidth: 0, alignSelf: 'flex-start' },
   userBubble: { borderBottomRightRadius: BorderRadius.xs },
   userText: { fontSize: FontSize.md, lineHeight: FontSize.md * 1.5 },
   assistantBubble: { borderBottomLeftRadius: BorderRadius.xs },

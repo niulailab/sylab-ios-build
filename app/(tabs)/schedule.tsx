@@ -12,9 +12,6 @@ const TOOLS = [
   { icon: 'image-outline', label: 'AI 生图', desc: '文字生成图片', color: '#6030ff', prompt: '帮我生成一张图片：' },
   { icon: 'videocam-outline', label: 'AI 视频', desc: '文字/图片生成视频', color: '#ec4899', prompt: '帮我生成一段视频：' },
   { icon: 'globe-outline', label: '浏览器', desc: 'AI 智能网页浏览', color: '#3b82f6', prompt: '帮我浏览这个网页并总结内容：' },
-  { icon: 'document-text-outline', label: '文档处理', desc: '文件预览与转换', color: '#f59e0b', prompt: '帮我处理一个文档，我需要：' },
-  { icon: 'search-outline', label: '知识检索', desc: '从知识库中搜索', color: '#22c55e', prompt: '在知识库中搜索：' },
-  { icon: 'code-slash-outline', label: '代码执行', desc: '运行代码片段', color: '#6366f1', prompt: '帮我执行以下代码：\n```python\n\n```' },
 ];
 
 export default function ScheduleScreen() {

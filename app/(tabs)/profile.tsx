@@ -5,25 +5,18 @@ import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuthStore } from '../../src/store/auth';
+import { normalizeFileUrl } from '../../src/utils/avatarUrl';
 import { creditsApi } from '../../src/api/credits';
 import { authApi } from '../../src/api/auth';
-import { botApi } from '../../src/api/bot';
-import { projectApi } from '../../src/api/project';
-import { knowledgeApi } from '../../src/api/knowledge';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../../src/constants/theme';
 import { useTheme } from '../../src/hooks/useTheme';
 import { Ionicons } from '@expo/vector-icons';
 
 // 路由映射
 const ROUTE_MAP: Record<string, string> = {
-  '我的知识库': '/knowledge',
-  '工作流': '/workflows',
-  '我的插件': '/plugins',
-  '我的 Agent': '/(tabs)/agents',
   '工具中心': '/(tabs)/schedule',
   '积分明细': '/credits',
   '应用设置': '/settings',
-  '通知设置': '/notifications',
   '帮助与反馈': '/help',
 };
 
@@ -32,25 +25,14 @@ const MENU_GROUPS = [
     title: '创作工具',
     items: [
       { icon: 'apps-outline', label: '工具中心', desc: 'AI生图/视频/浏览器等快捷工具' },
-      { icon: 'book-outline', label: '我的知识库', desc: '管理文档和知识切片' },
-      { icon: 'git-network-outline', label: '工作流', desc: '可视化流程编排' },
-      { icon: 'extension-puzzle', label: '我的插件', desc: '自定义插件管理' },
-      { icon: 'people-outline', label: '我的 Agent', desc: '创建和管理 Agent' },
-    ],
-  },
-  {
-    title: '自动化',
-    items: [
-      { icon: 'link-outline', label: 'Webhook', desc: '外部触发器管理' },
     ],
   },
   {
     title: '设置',
     items: [
-      { icon: 'wallet-outline', label: '积分明细', desc: '查看积分消费记录' },
+      { icon: 'wallet-outline', label: '积分明细', desc: '充值与积分消费记录' },
       { icon: 'settings-outline', label: '应用设置', desc: '通用配置' },
-      { icon: 'notifications-outline', label: '通知设置', desc: '推送通知管理' },
-      { icon: 'help-circle-outline', label: '帮助与反馈', desc: '使用帮助' },
+      { icon: 'help-circle-outline', label: '帮助与反馈', desc: '使用帮助与联系客服' },
     ],
   },
 ];
@@ -59,7 +41,6 @@ export default function ProfileScreen() {
   const router = useRouter();
   const { user, logout, setUser } = useAuthStore();
   const [balance, setBalance] = useState<number>(0);
-  const [stats, setStats] = useState({ projects: 0, agents: 0, knowledge: 0 });
   const [comingSoonModal, setComingSoonModal] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -71,18 +52,6 @@ export default function ProfileScreen() {
         const raw = typeof data.balance === 'string' ? parseFloat(data.balance) : (data.balance || 0);
         setBalance(Math.round(raw));
       }).catch(() => setBalance(0));
-
-      Promise.all([
-        projectApi.list({ page: 1, page_size: 1 }).catch(() => ({ total: 0 })),
-        botApi.list({ page: 1, page_size: 1 }).catch(() => ({ total: 0 })),
-        knowledgeApi.list({ page: 1, page_size: 1 }).catch(() => ({ total: 0 })),
-      ]).then(([projResult, botResult, knowledgeResult]) => {
-        setStats({
-          projects: projResult.total || 0,
-          agents: botResult.total || 0,
-          knowledge: knowledgeResult.total || 0,
-        });
-      }).catch(() => {});
     }
   }, [user]);
 
@@ -113,8 +82,30 @@ export default function ProfileScreen() {
     setSavingName(true);
     try {
       await authApi.updateProfile({ name: editName.trim() });
+      // 立即更新本地用户信息，无需重新登录
+      const currentUser = useAuthStore.getState().user;
+      if (currentUser) {
+        setUser({ ...currentUser, name: editName.trim() });
+      }
+      // 后台再拉一次服务端资料兜底（头像等字段一并刷新）
+      try {
+        const meResp: any = await authApi.getMe();
+        const info = meResp?.user || meResp?.data?.user || meResp?.data || meResp;
+        if (info && typeof info === 'object') {
+          const prev = useAuthStore.getState().user || ({} as any);
+          const merged = {
+            ...prev,
+            id: String(info.id || info.user_id || prev.id || ''),
+            name: info.screen_name || info.name || info.nick_name || editName.trim(),
+            email: info.email || prev.email,
+            avatar_url: normalizeFileUrl(info.avatar_url || info.avatar || prev.avatar_url) || prev.avatar_url || '',
+            created_at: prev.created_at || String(info.user_create_time || Date.now()),
+          } as any;
+          setUser(merged);
+        }
+      } catch { /* 本地已更新，忽略兜底失败 */ }
       setShowEditName(false);
-      showAlert('成功', '昵称已更新，重新登录后生效');
+      showAlert('成功', '昵称已更新');
     } catch (e: any) {
       showAlert('失败', e.message || '请稍后重试');
     } finally {
@@ -149,33 +140,41 @@ export default function ProfileScreen() {
     try {
       const formData = new FormData();
       const filename = uri.split('/').pop() || 'avatar.jpg';
-      const ext = filename.split('.').pop();
+      const ext = (filename.split('.').pop() || '').toLowerCase();
       const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
-      formData.append('file', {
+      // 后端上传头像接口要求字段名为 avatar；切勿手动设置 Content-Type，否则会丢失 multipart boundary
+      formData.append('avatar', {
         uri,
-        name: filename,
+        name: filename.includes('.') ? filename : `avatar.${ext === 'png' ? 'png' : 'jpg'}`,
         type: mimeType,
       } as any);
 
-      const authToken = useAuthStore.getState().patToken;
+      const authState = useAuthStore.getState();
+      const sessionKey = authState.sessionId;
+      const patToken = authState.patToken;
+      const headers: Record<string, string> = {};
+      // 该端点只认 session_key 会话 cookie
+      if (sessionKey) headers['Cookie'] = `session_key=${sessionKey}`;
+      if (patToken) headers['Authorization'] = `Bearer ${patToken}`;
       const baseUrl = 'https://s.symsgf.xyz';
       const resp = await fetch(`${baseUrl}/api/web/user/update/upload_avatar/`, {
         method: 'POST',
-        headers: {
-          'Authorization': authToken ? `Bearer ${authToken}` : '',
-          'Content-Type': 'multipart/form-data',
-        },
+        headers,
         body: formData,
       });
       const data = await resp.json();
-      if (data.code === 0 && data.data?.avatar_url) {
+      // 成功返回 { code:0, data:{ web_uri: "http://coze-minio:9000/opencoze/..." } }
+      const newUrl = data.code === 0 && (data.data?.web_uri || data.data?.avatar_url)
+        ? normalizeFileUrl(data.data.web_uri || data.data.avatar_url)
+        : '';
+      if (newUrl) {
         const currentUser = useAuthStore.getState().user;
         if (currentUser) {
-          setUser({ ...currentUser, avatar_url: data.data.avatar_url });
+          setUser({ ...currentUser, avatar_url: newUrl });
         }
         showAlert('成功', '头像已更新');
       } else {
-        showAlert('上传失败', data.msg || '服务器返回错误');
+        showAlert('上传失败', data.msg || data.message || '服务器返回错误');
       }
     } catch (e: any) {
       showAlert('上传失败', e.message || '网络错误');
@@ -217,8 +216,9 @@ export default function ProfileScreen() {
   };
 
   const renderAvatar = () => {
-    if (user?.avatar_url) {
-      return <Image source={{ uri: user.avatar_url }} style={styles.avatarImage} />;
+    const avatar = normalizeFileUrl(user?.avatar_url);
+    if (avatar) {
+      return <Image source={{ uri: avatar }} style={styles.avatarImage} />;
     }
     return <Text style={styles.avatarText}>{user?.name?.[0] || 'U'}</Text>;
   };
@@ -269,23 +269,12 @@ export default function ProfileScreen() {
         </TouchableOpacity>
         <Text style={styles.userEmail}>{user?.email || '未设置'}</Text>
 
-        {/* 资产概览 */}
+        {/* 资产概览：仅展示积分 */}
         <View style={styles.statsRow}>
-          {[
-            { icon: 'folder' as const, label: '项目', value: String(stats.projects) },
-            { icon: 'people' as const, label: 'Agent', value: String(stats.agents) },
-            { icon: 'book' as const, label: '知识库', value: String(stats.knowledge) },
-          ].map((s) => (
-            <View key={s.label} style={styles.statItem}>
-              <Ionicons name={s.icon} size={16} color="rgba(255,255,255,0.7)" />
-              <Text style={styles.statValue}>{s.value}</Text>
-              <Text style={styles.statLabel}>{s.label}</Text>
-            </View>
-          ))}
           <TouchableOpacity style={styles.statItem} onPress={() => router.push('/credits' as any)}>
-            <Ionicons name="diamond" size={16} color="rgba(255,255,255,0.9)" />
+            <Ionicons name="diamond" size={18} color="rgba(255,255,255,0.95)" />
             <Text style={[styles.statValue, { color: '#fde68a' }]}>{balance}</Text>
-            <Text style={styles.statLabel}>积分 ›</Text>
+            <Text style={styles.statLabel}>积分余额 ›</Text>
           </TouchableOpacity>
         </View>
       </LinearGradient>

@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Modal, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../src/constants/theme';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.9.22';
 
 const FAQ_ITEMS = [
   { q: '如何创建 Agent？', a: '在 sylab 平台创建 Bot 后，即可在 App 的"我的 Agent"中查看和使用。' },
@@ -16,15 +17,18 @@ const FAQ_ITEMS = [
 
 export default function HelpScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
 
+  const SUPPORT_EMAIL = '1643143@qq.com';
+
   const handleContact = () => {
-    Linking.openURL('https://s.symsgf.xyz').catch(() => {});
+    Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('sylab 反馈与支持')}`).catch(() => {});
   };
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color={Colors.text} />
         </TouchableOpacity>
@@ -85,7 +89,7 @@ export default function HelpScreen() {
               <Ionicons name="mail-outline" size={20} color={Colors.textSecondary} />
               <Text style={styles.rowLabel}>客服邮箱</Text>
             </View>
-            <Text style={styles.rowValue}>support@sylab.com</Text>
+            <Text style={styles.rowValue}>{SUPPORT_EMAIL}</Text>
           </View>
         </View>
 

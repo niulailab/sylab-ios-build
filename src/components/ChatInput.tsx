@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
-import { View, TextInput, TouchableOpacity, Text, StyleSheet, Platform, Alert, ActivityIndicator, Modal, FlatList } from 'react-native';
+import { View, TextInput, TouchableOpacity, Text, StyleSheet, Platform, Alert, ActivityIndicator, Modal, FlatList, Image } from 'react-native';
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -17,7 +17,20 @@ interface AttachedFile {
   type: string;
   blob?: Blob;
   uri?: string;
+  previewUri?: string; // local uri for thumbnail (native asset.uri or web object URL)
 }
+
+// Extract a public URL from a /user-upload style response ({ code, data })
+const extractUploadUrl = (result: any): string => {
+  if (!result) return '';
+  // data may be a JSON string or an object
+  let d = result.data;
+  if (typeof d === 'string') {
+    try { d = JSON.parse(d); } catch { d = null; }
+  }
+  const url = (d && (d.url || d.file_url || d.download_url)) || result.url || result.file_url || '';
+  return typeof url === 'string' ? url : '';
+};
 
 interface QuotedMessage {
   role: string;
@@ -88,7 +101,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const inputRef = useRef<TextInput>(null);
   const isSendingRef = useRef(false);
-  const [inputHeight, setInputHeight] = useState(40);
+  const [inputHeight, setInputHeight] = useState(Platform.OS === 'web' ? 40 : 24);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -130,8 +143,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         addFiles(files.map(f => ({
           name: f.name,
           size: f.size,
-          type: f.type,
+          type: f.type || 'application/octet-stream',
           blob: f as Blob,
+          previewUri: (f.type || '').startsWith('image/') ? URL.createObjectURL(f) : undefined,
         })));
       };
       input.click();
@@ -169,6 +183,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           size: f.size,
           type: f.type || 'image/jpeg',
           blob: f as Blob,
+          previewUri: (f.type || 'image/jpeg').startsWith('image/') ? URL.createObjectURL(f) : undefined,
         })));
       };
       input.click();
@@ -191,6 +206,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         size: asset.fileSize || 0,
         type: asset.mimeType || 'image/jpeg',
         uri: asset.uri,
+        previewUri: asset.uri,
       })));
     } catch (e) {
       console.error('[ChatInput] Image picker error:', e);
@@ -211,6 +227,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           size: f.size,
           type: f.type || 'image/jpeg',
           blob: f as Blob,
+          previewUri: (f.type || 'image/jpeg').startsWith('image/') ? URL.createObjectURL(f) : undefined,
         })));
       };
       input.click();
@@ -232,6 +249,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         size: asset.fileSize || 0,
         type: asset.mimeType || 'image/jpeg',
         uri: asset.uri,
+        previewUri: asset.uri,
       })));
     } catch (e) {
       console.error('[ChatInput] Camera error:', e);
@@ -242,56 +260,87 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setAttachedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const UPLOAD_URL = 'https://s.symsgf.xyz/v1/files/upload';
+  const UPLOAD_URL = 'https://s.symsgf.xyz/user-upload';
 
-  const uploadToCoze = async (file: AttachedFile): Promise<string | null> => {
-    try {
-      // Native (iOS/Android): use FileSystem.uploadAsync which builds multipart reliably.
-      // React Native FormData with {uri,name,type} often fails to send file bytes on iOS.
+  // Upload a single file to /user-upload. Returns the public URL on success, or null.
+  // Success criterion = we got a usable public URL (AI reads the image via this URL;
+  // there is no separate coze file_id). This avoids false "upload failed" alerts when
+  // the file was actually saved but a retry/timeout made the client think otherwise.
+  const uploadOneFile = async (file: AttachedFile): Promise<string | null> => {
+    const tryPost = async (): Promise<string | null> => {
+      const parseBody = (bodyText: string): string => {
+        try { return extractUploadUrl(JSON.parse(bodyText)) || ''; } catch { return ''; }
+      };
+      const xFileName = encodeURIComponent(file.name || 'upload.bin');
+
+      // Native: FileSystem.uploadAsync BINARY_CONTENT first (efficient, streams from disk).
       if (Platform.OS !== 'web' && file.uri) {
-        const uploadResp = await FileSystem.uploadAsync(UPLOAD_URL, file.uri, {
-          httpMethod: 'POST',
-          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-          fieldName: 'file',
-          mimeType: file.type || 'application/octet-stream',
-          headers: { 'Authorization': `Bearer ${patToken || ''}` },
-          parameters: { purpose: 'assistants' },
-        });
-        console.log('[ChatInput] native upload status:', uploadResp.status, 'name:', file.name);
-        if (uploadResp.status >= 200 && uploadResp.status < 300) {
-          const result = JSON.parse(uploadResp.body);
-          const fileId = result?.data?.id || result?.id || null;
-          console.log('[ChatInput] Coze upload OK (native), file_id:', fileId);
-          return fileId;
+        try {
+          const uploadResp = await FileSystem.uploadAsync(UPLOAD_URL, file.uri, {
+            httpMethod: 'POST',
+            uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+            headers: {
+              'Content-Type': file.type || 'application/octet-stream',
+              'X-File-Name': xFileName,
+            },
+          });
+          if (uploadResp.status >= 200 && uploadResp.status < 300) {
+            const url = parseBody(uploadResp.body || '');
+            if (url) return url;
+          }
+        } catch (e) {
+          console.warn('[ChatInput] uploadAsync failed, fallback to fetch:', (e as any)?.message || e);
         }
-        console.error('[ChatInput] Coze native upload failed:', uploadResp.status, (uploadResp.body || '').substring(0, 300));
-        return null;
       }
 
-      // Web: FormData with Blob
-      const formData = new FormData();
-      const blob = file.blob || new Blob([]);
-      const fileObj = new File([blob], file.name, { type: file.type || 'application/octet-stream' });
-      formData.append('file', fileObj);
-      formData.append('purpose', 'assistants');
+      // Unified fetch path (web native, and native fallback). Reads file:// into a Blob.
+      let blob = file.blob;
+      if (!blob && file.uri) {
+        try { blob = await uriToBlob(file.uri); } catch (e) {
+          console.warn('[ChatInput] uriToBlob failed:', (e as any)?.message || e);
+        }
+      }
+      if (!blob) throw new Error('no file data');
+      // Try raw binary with X-File-Name first (server saves with proper extension).
       const resp = await fetch(UPLOAD_URL, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${patToken || ''}` },
-        body: formData,
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+          'X-File-Name': xFileName,
+        },
+        body: blob as any,
       });
       if (resp.ok) {
-        const result = await resp.json();
-        const fileId = result.data?.id || result.id || null;
-        console.log('[ChatInput] Coze upload OK (web), file_id:', fileId);
-        return fileId;
+        const url = parseBody(await resp.text());
+        if (url) return url;
       }
-      const errText = await resp.text().catch(() => '');
-      console.error('[ChatInput] Coze upload failed:', resp.status, errText);
-      return null;
-    } catch (e) {
-      console.error('[ChatInput] Coze upload error:', e);
-      return null;
+      // Last resort: multipart/form-data (server also accepts it).
+      const fd = new FormData();
+      const cleanName = decodeURIComponent(xFileName);
+      fd.append('file', { uri: file.uri, name: cleanName, type: file.type || 'application/octet-stream' } as any);
+      const resp2 = await fetch(UPLOAD_URL, { method: 'POST', body: fd as any, headers: { 'X-File-Name': xFileName } });
+      if (resp2.ok) {
+        const url = parseBody(await resp2.text());
+        if (url) return url;
+      }
+      throw new Error('upload http status ' + resp.status + '/' + resp2.status);
+    };
+
+    const maxAttempts = Platform.OS !== 'web' ? 2 : 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const url = await tryPost();
+        if (url) {
+          console.log('[ChatInput] upload OK, url:', url);
+          return url;
+        }
+      } catch (err: any) {
+        console.warn(`[ChatInput] upload attempt ${attempt} error:`, err?.message || err);
+      }
+      if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 1200));
     }
+    console.error('[ChatInput] upload failed after', maxAttempts, 'attempts:', file.name);
+    return null;
   };
 
   const handleUploadAndSend = async () => {
@@ -304,56 +353,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
     isSendingRef.current = true;
     setUploading(true);
-    const uploadedNames: string[] = [];
-    const cozeFileIds: string[] = [];
+    const uploadedUrls: string[] = [];
 
     try {
       for (const file of attachedFiles) {
-        // 1. Upload to project-files (conversation file storage)
-        try {
-          let blob: Blob;
-          if (file.blob) {
-            blob = file.blob;
-          } else if (file.uri) {
-            blob = await uriToBlob(file.uri);
-          } else {
-            blob = new Blob([]);
-          }
-          const resp = await fetch(
-            'https://s.symsgf.xyz/project-files/api/files/upload',
-            {
-              method: 'POST',
-              headers: {
-                'X-Conversation-Id': effectiveConvId || 'pending',
-                'X-File-Name': file.name,
-                'Content-Type': file.type || 'application/octet-stream',
-              },
-              body: blob,
-            }
-          );
-          if (resp.ok) {
-            const result = await resp.json();
-            const savedName = result.data?.name || file.name;
-            uploadedNames.push(savedName);
-            onFileUploaded?.({ name: file.name, url: result.data?.url });
-          } else {
-            console.warn('[ChatInput] project-files upload failed:', resp.status);
-          }
-        } catch (pe) {
-          console.warn('[ChatInput] project-files upload error:', pe);
-        }
-
-        // 2. Upload to Coze file API (so AI can see it)
-        const fileId = await uploadToCoze(file);
-        if (fileId) {
-          cozeFileIds.push(fileId);
-        }
+        // Single source of truth: upload to /user-upload, get a public URL.
+        // AI reads the image via this URL — nothing else is needed for it to "see" it.
+        const url = await uploadOneFile(file);
+        uploadedUrls.push(url || '');
+        if (url) onFileUploaded?.({ name: file.name, url });
       }
     } catch (e) {
       console.error('[ChatInput] 文件上传失败:', e);
     } finally {
       setUploading(false);
       setTimeout(() => { isSendingRef.current = false; }, 500);
+    }
+
+    const okCount = uploadedUrls.filter(Boolean).length;
+
+    // Only abort + warn when NOTHING uploaded. If at least one file made it up,
+    // proceed (AI can see the uploaded ones) instead of a scary false failure.
+    if (okCount === 0) {
+      Alert.alert(
+        '附件上传失败',
+        '图片/文件没能传到服务器，可能是网络不稳定。请重试，或换用截图/较小的文件。',
+        [{ text: '知道了' }]
+      );
+      return;
+    }
+    if (okCount < attachedFiles.length) {
+      console.warn(`[ChatInput] ${attachedFiles.length - okCount} file(s) failed; sending ${okCount} ok`);
     }
 
     // Store pending blobs for later sync (new conversation case)
@@ -370,21 +400,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
 
     let msgText = text.trim();
-    const displayNames = uploadedNames.length > 0 ? uploadedNames : attachedFiles.map(f => f.name);
-    if (displayNames.length > 0) {
-      const fileNames = displayNames.map(n => `\u{1F4CE}${n}`).join(' ');
+    const okNames = attachedFiles
+      .map((f, i) => (uploadedUrls[i] ? f.name : null))
+      .filter(Boolean) as string[];
+    if (okNames.length > 0) {
+      const fileNames = okNames.map(n => `\u{1F4CE}${n}`).join(' ');
       msgText = msgText ? `${msgText}\n${fileNames}` : fileNames;
     }
 
-    if (cozeFileIds.length === 0 && attachedFiles.length > 0) {
-      Alert.alert(
-        '附件上传失败',
-        '文件未能上传到服务器（可能是网络或隧道不稳定）。请重试，或换用截图/较小的文件。',
-        [{ text: '知道了' }]
-      );
-    }
-
-    onSend(msgText, [], cozeFileIds.length > 0 ? cozeFileIds : undefined);
+    // File metadata with public URLs (only successfully uploaded ones)
+    const fileMeta = attachedFiles
+      .map((f, i) => ({
+        name: f.name,
+        type: f.type || 'application/octet-stream',
+        url: uploadedUrls[i] || '',
+        fileId: '',
+      }))
+      .filter(m => m.url);
+    onSend(msgText, fileMeta, undefined);
     setText('');
     setAttachedFiles([]);
   };
@@ -422,19 +455,48 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
       {attachedFiles.length > 0 && (
         <View style={styles.attachments}>
-          {attachedFiles.map((file, index) => (
-            <View key={index} style={styles.attachmentChip}>
-              <Ionicons
-                name={file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'videocam' : 'document'}
-                size={14}
-                color={Colors.primary}
-              />
-              <Text style={styles.attachmentName}>{file.name}</Text>
-              <TouchableOpacity onPress={() => removeFile(index)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                <Ionicons name="close-circle" size={16} color={Colors.textTertiary} />
-              </TouchableOpacity>
-            </View>
-          ))}
+          {attachedFiles.map((file, index) => {
+            const isImage = (file.type || '').startsWith('image/') && (file.previewUri || file.uri);
+            if (isImage) {
+              const thumbUri = file.previewUri || file.uri;
+              return (
+                <View key={index} style={styles.thumbWrap}>
+                  {Platform.OS === 'web' ? (
+                    // [FIX] web: render a plain <img> for blob: preview URIs to avoid
+                    // RN-Web ImageLoader prefetch (new window.Image) crash on object URLs
+                    // @ts-ignore web-only DOM element
+                    <img src={thumbUri} style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8 }} />
+                  ) : (
+                    <Image
+                      source={{ uri: thumbUri }}
+                      style={styles.thumb}
+                      resizeMode="cover"
+                    />
+                  )}
+                  <TouchableOpacity
+                    onPress={() => removeFile(index)}
+                    style={styles.thumbRemove}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="close-circle" size={18} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              );
+            }
+            return (
+              <View key={index} style={styles.attachmentChip}>
+                <Ionicons
+                  name={file.type.startsWith('video/') ? 'videocam' : 'document'}
+                  size={14}
+                  color={Colors.primary}
+                />
+                <Text style={styles.attachmentName}>{file.name}</Text>
+                <TouchableOpacity onPress={() => removeFile(index)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="close-circle" size={16} color={Colors.textTertiary} />
+                </TouchableOpacity>
+              </View>
+            );
+          })}
         </View>
       )}
 
@@ -464,6 +526,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               e.preventDefault();
               handleUploadAndSend();
             }
+          }}
+          onContentSizeChange={Platform.OS === 'web' ? undefined : (e: any) => {
+            const h = Math.min(120, Math.max(24, Math.ceil(e.nativeEvent.contentSize.height)));
+            setInputHeight(h);
           }}
         />
 
@@ -553,6 +619,17 @@ const styles = StyleSheet.create({
     maxWidth: 200,
   },
   attachmentName: { fontSize: 12, color: Colors.text, maxWidth: 130 },
+  thumbWrap: {
+    width: 64, height: 64, borderRadius: BorderRadius.md,
+    overflow: 'visible', position: 'relative', marginRight: 8, marginBottom: 4,
+    borderWidth: 1, borderColor: Colors.borderLight,
+  },
+  thumb: { width: 64, height: 64, borderRadius: BorderRadius.md, backgroundColor: '#e5e7eb' },
+  thumbRemove: {
+    position: 'absolute', top: -8, right: -8, zIndex: 2,
+    backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 11, width: 22, height: 22,
+    alignItems: 'center', justifyContent: 'center',
+  },
   inputRow: {
     flexDirection: 'row', alignItems: 'center',
     borderRadius: BorderRadius.full,
@@ -562,7 +639,7 @@ const styles = StyleSheet.create({
     width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: Colors.border,
     justifyContent: 'center', alignItems: 'center',
   },
-  input: { flex: 1, fontSize: FontSize.md, maxHeight: 120, lineHeight: 20, paddingVertical: 2 },
+  input: { flex: 1, fontSize: FontSize.md, maxHeight: 120, lineHeight: 20, paddingVertical: Platform.OS === 'web' ? 2 : 0, marginLeft: Spacing.sm },
   sendBtn: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginLeft: Spacing.sm },
   stopBtn: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginLeft: Spacing.sm },
   modalOverlay: {

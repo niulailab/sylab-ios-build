@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Modal, TextInput, Alert } from "react-native";
 import { SafeAlert } from "../src/utils/safeAlert";
 import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { pluginApi } from '../src/api/plugin';
 import { SkeletonLoader } from '../src/components/SkeletonLoader';
@@ -17,6 +18,7 @@ interface PluginItem {
 
 export default function PluginsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { isDark } = useTheme();
   const [items, setItems] = useState<PluginItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,7 +93,7 @@ export default function PluginsScreen() {
 
   if (loading) {
     return (
-      <View style={[styles.container, { backgroundColor: isDark ? '#0f172a' : Colors.backgroundSecondary }]}>
+      <View style={[styles.container, { backgroundColor: isDark ? '#0f172a' : Colors.backgroundSecondary , paddingTop: insets.top }]}>
         <View style={[styles.header, { backgroundColor: isDark ? '#1e293b' : '#fff' }]}>
           <View style={{ width: 36 }} />
           <View style={{ height: 16, width: 80, backgroundColor: isDark ? '#334155' : '#E8E8E8', borderRadius: 12 }} />
@@ -103,7 +105,7 @@ export default function PluginsScreen() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: isDark ? '#0f172a' : Colors.backgroundSecondary }]}>
+    <View style={[styles.container, { backgroundColor: isDark ? '#0f172a' : Colors.backgroundSecondary , paddingTop: insets.top }]}>
       <View style={[styles.header, { backgroundColor: isDark ? '#1e293b' : '#fff', borderBottomColor: isDark ? '#334155' : Colors.borderLight }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color={isDark ? '#f1f5f9' : Colors.text} />

@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import { chatQueueApi } from '../api/chatQueue';
 import { useChatStore } from '../store/chat';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface ActiveTask {
   taskId: string;
@@ -12,38 +13,45 @@ interface ActiveTask {
 
 const STORAGE_KEY = 'sylab_active_queue_task';
 
-// Persist task to localStorage so it survives component unmount
+// Persist task so it survives component unmount.
+// web -> localStorage (sync), native -> AsyncStorage (async).
 function persistTask(task: ActiveTask | null) {
   try {
-    if (Platform.OS !== 'web') return;
-    if (task) {
-      // Use conversation-specific key to prevent cross-conversation leakage
-      const key = STORAGE_KEY + '_' + task.conversationId;
-      localStorage.setItem(key, JSON.stringify(task));
-    } else {
-      // Clear all task keys (we don't know which conversation)
-      const keysToRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith(STORAGE_KEY)) keysToRemove.push(k);
+    if (Platform.OS === 'web') {
+      if (task) {
+        localStorage.setItem(STORAGE_KEY + '_' + task.conversationId, JSON.stringify(task));
+      } else {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(STORAGE_KEY)) keysToRemove.push(k);
+        }
+        keysToRemove.forEach(k => localStorage.removeItem(k));
       }
-      keysToRemove.forEach(k => localStorage.removeItem(k));
+    } else {
+      if (task) {
+        AsyncStorage.setItem(STORAGE_KEY + '_' + task.conversationId, JSON.stringify(task)).catch(() => {});
+      } else {
+        AsyncStorage.getAllKeys().then(keys => {
+          const mine = (keys as string[]).filter(k => k.startsWith(STORAGE_KEY));
+          if (mine.length) AsyncStorage.multiRemove(mine).catch(() => {});
+        }).catch(() => {});
+      }
     }
   } catch (e) {
     console.warn('[ChatQueue] Failed to persist task:', e);
   }
 }
 
+// Sync loader (web only; native has no sync storage so returns null here).
 function loadPersistedTask(conversationId?: string): ActiveTask | null {
   try {
     if (Platform.OS !== 'web') return null;
     if (conversationId) {
-      // Load task for specific conversation only
       const raw = localStorage.getItem(STORAGE_KEY + '_' + conversationId);
       if (raw) return JSON.parse(raw);
       return null;
     }
-    // Fallback: scan all keys
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (k && k.startsWith(STORAGE_KEY)) {
@@ -53,6 +61,29 @@ function loadPersistedTask(conversationId?: string): ActiveTask | null {
     }
   } catch (e) {
     console.warn('[ChatQueue] Failed to load persisted task:', e);
+  }
+  return null;
+}
+
+// Async loader used on mount/recovery - works on native (AsyncStorage) & web.
+async function loadPersistedTaskAsync(conversationId?: string): Promise<ActiveTask | null> {
+  try {
+    if (Platform.OS === 'web') return loadPersistedTask(conversationId);
+    const all = await AsyncStorage.getAllKeys();
+    if (conversationId) {
+      const own = STORAGE_KEY + '_' + conversationId;
+      if ((all as string[]).includes(own)) {
+        const raw = await AsyncStorage.getItem(own);
+        return raw ? JSON.parse(raw) : null;
+      }
+      return null;
+    }
+    for (const k of (all as string[]).filter(x => x.startsWith(STORAGE_KEY))) {
+      const raw = await AsyncStorage.getItem(k);
+      if (raw) return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.warn('[ChatQueue] Failed to load persisted task async:', e);
   }
   return null;
 }
@@ -184,9 +215,25 @@ export function useChatQueue(conversationId?: string) {
         persistTask(null);
 
       } else if (status.status === 'processing') {
-        console.log('[ChatQueue] Task still processing, reconnecting stream');
+        // Silent backfill: fetch everything missed while away as COMPLETE text
+        // (no typewriter replay), advance cursor, THEN resume live stream from
+        // that cursor so only genuinely new deltas stream in.
+        console.log('[ChatQueue] Task still processing, backfilling history then resuming');
+        try {
+          const { events } = await chatQueueApi.getEvents(task.taskId, task.lastEventIndex);
+          for (const event of events) {
+            task.lastEventIndex = Math.max(task.lastEventIndex, event.index + 1);
+            if (event.event_type === 'conversation.message.delta' && event.data?.content) {
+              useChatStore.getState().appendDelta(event.data.content);
+            }
+          }
+          persistTask(task);
+        } catch (e) {
+          console.warn('[ChatQueue] Backfill failed on reconnect:', e);
+        }
         chatQueueApi.connectStream(task.taskId, {
           onDelta: (text) => useChatStore.getState().appendDelta(text),
+          onEventIndex: (idx) => { task.lastEventIndex = Math.max(task.lastEventIndex, idx + 1); },
           onComplete: (chatId) => {
             useChatStore.getState().finishStreaming(chatId || `msg_${Date.now()}`);
             activeTaskRef.current = null;
@@ -196,7 +243,7 @@ export function useChatQueue(conversationId?: string) {
             console.error('[ChatQueue] Stream reconnect error:', err);
             pollForCompletion(task.taskId);
           },
-        });
+        }, task.lastEventIndex);
 
       } else if (status.status === 'failed') {
         console.error('[ChatQueue] Task failed:', status.error);
@@ -256,5 +303,22 @@ export function useChatQueue(conversationId?: string) {
     };
   }, [handleReconnect, clearTimers]);
 
-  return { registerTask, clearTask, activeTaskRef, getActiveTask };
+  // Hydrate ref from persisted storage on mount/recovery (native esp.).
+  const restoreTask = useCallback(async (convId?: string): Promise<ActiveTask | null> => {
+    if (activeTaskRef.current) {
+      if (convId && activeTaskRef.current.conversationId !== convId) {
+        // ref belongs to another conversation; fall through to storage
+      } else {
+        return activeTaskRef.current;
+      }
+    }
+    const task = await loadPersistedTaskAsync(convId);
+    if (task && (!convId || task.conversationId === convId)) {
+      activeTaskRef.current = task;
+      return task;
+    }
+    return null;
+  }, []);
+
+  return { registerTask, clearTask, activeTaskRef, getActiveTask, restoreTask };
 }

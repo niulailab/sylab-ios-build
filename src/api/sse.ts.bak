@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 
-const API_BASE = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE || 'http://36.137.84.216:9091';
+const API_BASE = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE || 'https://s.symsgf.xyz';
 
 export interface TokenUsage {
   input: number;
@@ -10,8 +10,9 @@ export interface TokenUsage {
 
 export interface SseCallbacks {
   onDelta: (text: string) => void;
-  onToolCall?: (name: string, args: string) => void;
+  onToolCall?: (name: string, args: string, result?: string) => void;
   onComplete: (chatId: string, conversationId: string, tokens?: TokenUsage) => void;
+  onMessageComplete?: () => void;
   onError: (error: Error) => void;
   onStatus?: (status: string) => void;
 }
@@ -32,13 +33,10 @@ export interface ChatRequest {
 
 /**
  * Estimate token count from text content.
- * Uses character-based approximation: ~3 chars per token (mixed Chinese/English).
  */
 function estimateTokens(text: string): number {
   if (!text) return 0;
   const len = text.length;
-  // Chinese chars: ~1.5 chars/token, English: ~4 chars/token
-  // Use average of ~3 chars/token for mixed content
   return Math.ceil(len / 3);
 }
 
@@ -47,8 +45,14 @@ export function sendMessageStream(
   bearerToken: string,
   callbacks: SseCallbacks
 ): { abort: () => void } {
-  const url = `${API_BASE}/v3/chat`;
-  
+  const convId = (body as any).conversation_id;
+  let url = `${API_BASE}/v3/chat`;
+  if (convId) {
+    url += `?conversation_id=${encodeURIComponent(convId)}`;
+  }
+  const reqBody: Record<string, any> = { ...body };
+  delete reqBody.conversation_id;
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${bearerToken}`,
@@ -59,19 +63,50 @@ export function sendMessageStream(
   let lastChatId = '';
   let lastConversationId = '';
   let lastTokenUsage: TokenUsage | undefined;
-              let fullAssistantContent = "";
+  let fullAssistantContent = "";
+  let idleWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+  let thinkingPhase = 0;
+
+  const resetIdleWatchdog = () => {
+    if (idleWatchdog) clearTimeout(idleWatchdog);
+    idleWatchdog = setTimeout(() => {
+      if (!aborted) {
+        console.error('[SSE] Idle timeout 90s, aborting');
+        aborted = true;
+        try { controller.abort(); } catch {}
+        callbacks.onError(new Error('response timeout, retrying...'));
+      }
+    }, 90000);
+  };
 
   (async () => {
     try {
-      callbacks.onStatus?.('connecting');
       console.log('[SSE] POST', url);
-      
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(reqBody),
-        signal: controller.signal,
-      });
+
+      const connectTimeout = setTimeout(() => {
+        if (!aborted) {
+          console.error('[SSE] Connect timeout (90s), aborting');
+          controller.abort();
+        }
+      }, 90000);
+
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(reqBody),
+          signal: controller.signal,
+        });
+      } catch (fetchErr: any) {
+        clearTimeout(connectTimeout);
+        if (fetchErr.name === 'AbortError') {
+          throw new Error('连接超时，请检查网络后重试');
+        }
+        throw fetchErr;
+      }
+      clearTimeout(connectTimeout);
 
       console.log('[SSE] response status:', response.status, response.statusText);
 
@@ -80,12 +115,8 @@ export function sendMessageStream(
         throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
       }
 
-      // Check if response body is available for streaming
       if (!response.body) {
-        // Fallback: read entire response as text and parse SSE events
-        console.log('[SSE] No streaming body, reading as text...');
         const text = await response.text();
-        console.log('[SSE] Got text response, length:', text.length);
         parseSseText(text, callbacks, lastChatId, lastConversationId);
         return;
       }
@@ -95,42 +126,51 @@ export function sendMessageStream(
       let buffer = '';
       let currentEvent = '';
 
-      callbacks.onStatus?.('streaming');
       console.log('[SSE] Stream started, reading...');
+      resetIdleWatchdog();
+      thinkingPhase = 0;
+      thinkingTimer = setInterval(() => {
+        thinkingPhase++;
+        if (thinkingPhase === 1) callbacks.onStatus?.('thinking');
+        else if (thinkingPhase === 2) callbacks.onStatus?.('thinking_deep');
+        else if (thinkingPhase >= 3) callbacks.onStatus?.('thinking_long');
+      }, 12000);
 
       while (true) {
         if (aborted) break;
         const { done, value } = await reader.read();
         if (done) {
           console.log('[SSE] Stream ended, done=true');
+          if (idleWatchdog) clearTimeout(idleWatchdog);
+          if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
           break;
         }
 
         buffer += decoder.decode(value, { stream: true });
+        resetIdleWatchdog();
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
         for (const line of lines) {
           if (aborted) break;
-          
+
           const trimmed = line.trim();
           if (!trimmed) {
             currentEvent = '';
             continue;
           }
-          
+
           if (trimmed.startsWith('event:')) {
             currentEvent = trimmed.slice(6).trim();
             continue;
           }
-          
+
           if (trimmed.startsWith('data:')) {
             const dataStr = trimmed.slice(5).trim();
             if (!dataStr || dataStr === '[DONE]') continue;
-            
+
             try {
               const data = JSON.parse(dataStr);
-              // Always try to extract IDs from any event
               if (data.chat_id) lastChatId = data.chat_id;
               if (data.conversation_id) lastConversationId = data.conversation_id;
               if (data.id && !lastChatId) {
@@ -139,17 +179,43 @@ export function sendMessageStream(
                 }
               }
 
-              // Handle delta events
-              if (currentEvent === 'conversation.message.delta' && data.content) {
-                callbacks.onDelta(data.content);
-                if (data.role === "assistant") fullAssistantContent += data.content;
+              // delta: only real content text triggers streaming
+              if (currentEvent === 'conversation.message.delta') {
+                // Support both top-level and nested message_item
+                const dMsg = data.message_item || data;
+                const dType = (dMsg.type || dMsg.message_type || '').toLowerCase();
+                // Only process answer-type messages; skip function_call/tool_response/verbose fragments
+                const isAnswerType = !dType || dType === 'answer' || dType === 'text';
+                if (isAnswerType && dMsg.content) {
+                  callbacks.onDelta(dMsg.content);
+                  if (dMsg.role === "assistant") fullAssistantContent += dMsg.content;
+                  if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+                  callbacks.onStatus?.('streaming');
+                }
+                // Reasoning deltas do NOT change status - thinking is already set at stream start.
+                // Triggering onStatus('thinking') here would override tool status ("正在搜索...") during tool execution.
+                // We only update status when actual answer content arrives (onStatus('streaming')).
+                // Detect tool_calls in delta (some formats)
+                const tcList = dMsg.tool_calls || data.tool_calls;
+                if (tcList && Array.isArray(tcList)) {
+                  for (const tc of tcList) {
+                    const name = tc.function?.name || tc.name || 'unknown';
+                    const args = tc.function?.arguments || tc.arguments || '{}';
+                    if (name && name !== 'unknown') {
+                      console.log('[SSE] Tool call from delta:', name);
+                      callbacks.onToolCall?.(name, args);
+                    }
+                  }
+                }
               }
-              // Handle tool calls
+              // message.completed: token usage + function_call + tool_response
               else if (currentEvent === 'conversation.message.completed') {
-                // Extract token usage from meta_data (if backend provides it)
-                if (data.role === 'assistant' && data.meta_data) {
+                // Support both top-level and nested message_item
+                const dMsg = data.message_item || data;
+                if (dMsg.role === 'assistant' && (dMsg.ext || data.meta_data)) {
+                  callbacks.onMessageComplete?.();
                   try {
-                    const ext = data.meta_data;
+                    const ext = dMsg.ext ? (typeof dMsg.ext === 'string' ? JSON.parse(dMsg.ext) : dMsg.ext) : data.meta_data;
                     const inputT = parseInt(ext.input_tokens || '0') || 0;
                     const outputT = parseInt(ext.output_tokens || '0') || 0;
                     const totalT = parseInt(ext.token || '0') || 0;
@@ -158,23 +224,77 @@ export function sendMessageStream(
                     }
                   } catch {}
                 }
-                // If backend didn't provide token counts, estimate from full content
-                if (!lastTokenUsage && data.role === 'assistant' && fullAssistantContent.length > 0) {
+                if (!lastTokenUsage && dMsg.role === 'assistant' && fullAssistantContent.length > 0) {
                   const outputTokens = estimateTokens(fullAssistantContent);
-                  const inputTokens = Math.round(outputTokens * 2); // rough estimate: input ≈ 2x output
+                  const inputTokens = Math.round(outputTokens * 2);
                   lastTokenUsage = { input: inputTokens, output: outputTokens, total: inputTokens + outputTokens };
-                  console.log('[SSE] Estimated tokens from content:', lastTokenUsage, 'contentLen:', fullAssistantContent.length);
                 }
-                if (data.role === 'tool' && data.type === 'tool_response') {
+                // function_call arrives as a completed message (type=function_call, role=assistant)
+                const msgType = dMsg.type || dMsg.message_type || data.type || data.message_type || '';
+                if (msgType === 'function_call') {
                   try {
-                    const content = JSON.parse(data.content || '{}');
-                    if (content.name) {
-                      callbacks.onToolCall?.(content.name, content.arguments || '{}');
-                    }
+                    let tc: any = {};
+                    try { tc = JSON.parse(dMsg.content || '{}'); } catch { tc = {}; }
+                    let extObj: any = {};
+                    try { extObj = dMsg.ext ? (typeof dMsg.ext === 'string' ? JSON.parse(dMsg.ext) : dMsg.ext) : {}; } catch {}
+                    const name = tc.function?.name || tc.name || dMsg.meta_data?.tool_name || data.meta_data?.tool_name || extObj.tool_name || extObj.plugin || 'unknown';
+                    const args = tc.function?.arguments || tc.arguments || '{}';
+                    console.log('[SSE] Tool call detected:', name);
+                    callbacks.onToolCall?.(name, args);
+                    callbacks.onStatus?.('tool_running');
+                  } catch (e) { console.warn('[SSE] function_call parse error:', e); }
+                }
+                // tool_response: mark previous tool call as done
+                if (msgType === 'tool_response') {
+                  try {
+                    let toolName = '';
+                    const content = dMsg.content || '';
+                    let extObj: any = {};
+                    try { extObj = dMsg.ext ? (typeof dMsg.ext === 'string' ? JSON.parse(dMsg.ext) : dMsg.ext) : {}; } catch {}
+                    if (dMsg.meta_data?.tool_name) toolName = dMsg.meta_data.tool_name;
+                    else if (data.meta_data?.tool_name) toolName = data.meta_data.tool_name;
+                    else if (extObj.tool_name) toolName = extObj.tool_name;
+                    else if (extObj.plugin) toolName = extObj.plugin;
+                    // Pass empty toolName - appendToolCall will match the most recent unfinished tool call
+                    callbacks.onToolCall?.(toolName, '', content);
                   } catch {}
                 }
+                // answer in completed event: some backends send full answer in completed rather than deltas
+                if (msgType === 'answer' || (dMsg.role === 'assistant' && !msgType && dMsg.content && typeof dMsg.content === 'string')) {
+                  const answerContent = dMsg.content;
+                  if (answerContent && answerContent.trim() && !fullAssistantContent.includes(answerContent)) {
+                    // If we already accumulated delta content, only append missing parts
+                    if (fullAssistantContent && answerContent.startsWith(fullAssistantContent)) {
+                      const remaining = answerContent.slice(fullAssistantContent.length);
+                      if (remaining) {
+                        callbacks.onDelta(remaining);
+                        fullAssistantContent += remaining;
+                      }
+                    } else if (!fullAssistantContent) {
+                      callbacks.onDelta(answerContent);
+                      fullAssistantContent = answerContent;
+                    }
+                    callbacks.onStatus?.('streaming');
+                  }
+                }
               }
-              // Handle errors
+              else if (currentEvent === 'conversation.chat.created' || currentEvent === 'conversation.chat.in_progress') {
+                callbacks.onStatus?.('thinking');
+              }
+              else if (currentEvent === 'conversation.chat.completed') {
+                try {
+                  if (data.usage) {
+                    const totalTokens = (data.usage.token_count || 0) || ((data.usage.input_count || 0) + (data.usage.output_count || 0));
+                    const inputTokens = data.usage.input_count || 0;
+                    const outputTokens = data.usage.output_count || 0;
+                    if (totalTokens > 0) {
+                      lastTokenUsage = { input: inputTokens, output: outputTokens, total: totalTokens };
+                    }
+                  }
+                } catch (e) {
+                  console.warn('[SSE] Failed to parse chat completed usage:', e);
+                }
+              }
               else if (currentEvent === 'conversation.chat.failed') {
                 callbacks.onError(new Error(data.last_error?.msg || '聊天处理失败'));
                 return;
@@ -186,13 +306,12 @@ export function sendMessageStream(
         }
       }
 
-      // Stream ended normally
       console.log('[SSE] Complete. chatId:', lastChatId, 'convId:', lastConversationId);
       callbacks.onComplete(lastChatId, lastConversationId, lastTokenUsage);
       callbacks.onStatus?.('complete');
     } catch (error: any) {
       if (error.name === 'AbortError') {
-        console.log('[SSE] Aborted by user');
+        callbacks.onError(new Error('连接已中断'));
         return;
       }
       console.error('[SSE] Error:', error.message);
@@ -203,12 +322,13 @@ export function sendMessageStream(
   return {
     abort: () => {
       aborted = true;
-      controller.abort();
+      if (idleWatchdog) clearTimeout(idleWatchdog);
+      if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+      try { controller.abort(); } catch {}
     },
   };
 }
 
-// Fallback parser for non-streaming responses
 function parseSseText(
   text: string,
   callbacks: SseCallbacks,
@@ -219,6 +339,8 @@ function parseSseText(
   let currentEvent = '';
   let lastChatId = chatId;
   let lastConvId = conversationId;
+  let fullContent = '';
+  let tokenUsage: TokenUsage | undefined;
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -235,7 +357,19 @@ function parseSseText(
           lastChatId = data.id;
         }
         if (currentEvent === 'conversation.message.delta' && data.content) {
+          fullContent += data.content;
           callbacks.onDelta(data.content);
+        }
+        if (currentEvent === 'conversation.message.completed' && data.role === 'assistant' && data.meta_data) {
+          try {
+            const ext = data.meta_data;
+            const inputT = parseInt(ext.input_tokens || '0') || 0;
+            const outputT = parseInt(ext.output_tokens || '0') || 0;
+            const totalT = parseInt(ext.token || '0') || 0;
+            if (totalT > 0 || inputT > 0 || outputT > 0) {
+              tokenUsage = { input: inputT, output: outputT, total: totalT || (inputT + outputT) };
+            }
+          } catch {}
         }
         if (currentEvent === 'conversation.chat.failed') {
           callbacks.onError(new Error(data.last_error?.msg || '聊天处理失败'));
@@ -244,13 +378,10 @@ function parseSseText(
       } catch {}
     }
   }
-  callbacks.onComplete(lastChatId, lastConvId);
+  callbacks.onComplete(lastChatId, lastConvId, tokenUsage);
   callbacks.onStatus?.('complete');
 }
 
-/**
- * 检查 Bot 是否支持 OpenAPI（connector_ids 包含 1024）
- */
 export function isBotOpenApiEnabled(connectorIds: string[]): boolean {
   return connectorIds.includes('1024');
 }

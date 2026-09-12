@@ -1,0 +1,17 @@
+{
+  "name": "Sylab AI",
+  "short_name": "Sylab",
+  "description": "AI \u667a\u80fd\u52a9\u624b - \u652f\u6301\u5bf9\u8bdd\u3001\u751f\u56fe\u3001\u751f\u89c6\u9891\u3001\u77e5\u8bc6\u5e93\u7ba1\u7406",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#6030ff",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64",
+      "type": "image/x-icon"
+    }
+  ]
+}

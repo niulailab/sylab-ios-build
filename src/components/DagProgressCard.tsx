@@ -1,0 +1,248 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, ActivityIndicator, Animated, Platform } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { Colors } from '../constants/theme';
+
+/**
+ * DAG 大任务编排实时进度卡
+ * 聊天页在父会话内轮询 /dag/progress，展示后台子任务接力进度：
+ *   子任务1 ✓ → 子任务2 ✓ → 子任务3 进行中…
+ * 子任务全部在后台独立会话运行，主会话靠这张卡给用户"活着"的反馈，
+ * 避免 2-3 分钟空档误以为卡死。
+ */
+
+interface DagNode {
+  node_id: string;
+  seq: number;
+  name: string;
+  prompt?: string;
+  status: string; // pending / running / completed / failed / skipped
+  has_files: boolean;
+}
+
+function dagDisplayName(n: DagNode): string {
+  const raw = (n.name || '').trim();
+  const looksGeneric = !raw ||
+    /^子任务\s*\d+$/.test(raw) ||
+    /^[Tt]ask\s*\d+$/.test(raw) ||
+    /^step\s*\d+$/i.test(raw);
+  if (looksGeneric && n.prompt) {
+    const pp = (n.prompt || '').replace(/\s+/g, ' ').trim();
+    if (pp) {
+      const fs = pp.split(/[。！？\n]/)[0].trim();
+      return fs.length > 28 ? fs.slice(0, 28) + '…' : fs;
+    }
+  }
+  return raw;
+}
+
+interface DagWorkflow {
+  wf_id: string;
+  title: string;
+  status: string;
+  total_nodes: number;
+  done_nodes: number;
+  created_at: string;
+  completed_at: string | null;
+  nodes: DagNode[];
+}
+
+interface DagProgressCardProps {
+  conversationId: string;
+  isDark?: boolean;
+}
+
+function fmtElapsed(sec: number): string {
+  if (sec < 60) return `${sec} 秒`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s ? `${m} 分 ${s} 秒` : `${m} 分钟`;
+}
+
+const STATUS_META: Record<string, { icon: string; color: string; label: string }> = {
+  completed: { icon: 'checkmark-circle', color: '#10b981', label: '完成' },
+  running: { icon: 'hammer', color: '#3b82f6', label: '进行中' },
+  pending: { icon: 'ellipse-outline', color: '#9ca3af', label: '等待中' },
+  failed: { icon: 'alert-circle', color: '#ef4444', label: '失败' },
+  skipped: { icon: 'remove-circle-outline', color: '#9ca3af', label: '跳过' },
+};
+
+export const DagProgressCard: React.FC<DagProgressCardProps> = ({ conversationId, isDark }) => {
+  const [wf, setWf] = useState<DagWorkflow | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef<number>(0);
+  const completedAtRef = useRef<number>(0);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pulse = useRef(new Animated.Value(1)).current;
+
+  // 轮询进度
+  useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+
+    const fetchProgress = async () => {
+      try {
+        const resp = await fetch(`https://s.symsgf.xyz/dag/progress?conv=${encodeURIComponent(conversationId)}`);
+        const json = await resp.json();
+        if (cancelled || json.code !== 0) return;
+        let data = json.data;
+        if (typeof data === 'string') data = JSON.parse(data);
+        if (!data || !data.workflow) {
+          setWf(null);
+          return;
+        }
+        const w: DagWorkflow = data.workflow;
+        // 页面打开时若最近一个工作流已完成超过 3 分钟，直接不显示（历史任务）
+        if (!data.active && w.completed_at) {
+          const doneMs = new Date(w.completed_at.replace(' ', 'T')).getTime();
+          if (Date.now() - doneMs > 180000) { setWf(null); return; }
+        }
+        setWf(w);
+        // 计时起点：前端首次观测到该活跃工作流即开始计时（本地时间，避免服务器时区偏差）
+        if (!startRef.current && data.active) {
+          startRef.current = Date.now();
+        }
+        // 任务刚结束（active→非active）时，停留展示 25 秒后自动隐藏，等最终汇报消息进来
+        if (!data.active && !completedAtRef.current) {
+          completedAtRef.current = Date.now();
+          hideTimerRef.current = setTimeout(() => setDismissed(true), 25000);
+        }
+      } catch {
+        // 静默失败，不打断聊天
+      }
+    };
+
+    fetchProgress();
+    const poll = setInterval(fetchProgress, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(poll);
+      if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
+    };
+  }, [conversationId]);
+
+  // 计时
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (startRef.current) setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // 呼吸动画
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.5, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  if (!wf || dismissed) return null;
+
+  const active = wf.status === 'running' || wf.status === 'pending';
+  const runningNode = (wf.nodes || []).find((n) => n.status === 'running');
+  const hasFail = (wf.nodes || []).some((n) => n.status === 'failed');
+
+  // 整体状态文案
+  let headText: string;
+  let headIcon: string;
+  let accent: string;
+  if (active) {
+    headText = runningNode ? `正在处理：${dagDisplayName(runningNode)}` : '任务排队中…';
+    headIcon = 'git-network-outline';
+    accent = '#3b82f6';
+  } else if (hasFail || wf.status === 'failed') {
+    headText = '任务部分失败，正在整理结果…';
+    headIcon = 'alert-circle';
+    accent = '#f59e0b';
+  } else {
+    headText = '子任务全部完成，正在汇总…';
+    headIcon = 'checkmark-done-circle';
+    accent = '#10b981';
+  }
+
+  return (
+    <View style={{ flexDirection: 'row', paddingHorizontal: 12, marginVertical: 4 }}>
+      <View style={{
+        width: 36, height: 36, borderRadius: 18, backgroundColor: isDark ? '#334155' : '#6b7280',
+        justifyContent: 'center', alignItems: 'center', marginRight: 8, marginTop: 2,
+      }}>
+        <Ionicons name="person" size={18} color="#fff" />
+      </View>
+
+      <View style={{
+        flex: 1,
+        backgroundColor: isDark ? '#1e293b' : '#ffffff',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: isDark ? '#334155' : 'rgba(0,0,0,0.06)',
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        ...Platform.select({
+          web: { boxShadow: '0 2px 10px rgba(0,0,0,0.05)' } as any,
+          default: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2 },
+        }),
+      }}>
+        {/* 标题行 */}
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Ionicons name={headIcon as any} size={15} color={accent} style={{ marginRight: 6 }} />
+          <Text style={{ flex: 1, fontSize: 14, fontWeight: '700', color: isDark ? '#f1f5f9' : '#1f2937' }} numberOfLines={1}>
+            大任务后台执行中 · {wf.done_nodes}/{wf.total_nodes}
+          </Text>
+          <Text style={{ fontSize: 12, color: isDark ? '#94a3b8' : '#9ca3af', marginLeft: 6 }}>
+            {fmtElapsed(Math.max(0, elapsed))}
+          </Text>
+        </View>
+
+        {/* 当前阶段 */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
+          {active ? (
+            <ActivityIndicator size="small" color={accent} style={{ marginRight: 7 }} />
+          ) : (
+            <Ionicons name={headIcon as any} size={14} color={accent} style={{ marginRight: 7 }} />
+          )}
+          <Text style={{ flex: 1, fontSize: 13, color: isDark ? '#cbd5e1' : '#4b5563' }} numberOfLines={1}>
+            {headText}
+          </Text>
+        </View>
+
+        {/* 子任务步骤 */}
+        <View style={{ marginTop: 8, gap: 5 }}>
+          {(wf.nodes || []).map((n) => {
+            const meta = STATUS_META[n.status] || STATUS_META.pending;
+            const isRunning = n.status === 'running';
+            return (
+              <View key={n.node_id} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                {isRunning ? (
+                  <Animated.View style={{ opacity: pulse, marginRight: 6 }}>
+                    <Ionicons name="radio-button-on" size={14} color={meta.color} />
+                  </Animated.View>
+                ) : (
+                  <Ionicons name={meta.icon as any} size={14} color={meta.color} style={{ marginRight: 6 }} />
+                )}
+                <Text style={{ fontSize: 13, color: n.status === 'completed' ? (isDark ? '#94a3b8' : '#9ca3af') : (isDark ? '#cbd5e1' : '#4b5563') }} numberOfLines={1}>
+                  {n.seq}. {dagDisplayName(n)}
+                  {n.status === 'running' ? ' …' : n.status === 'completed' ? ' ✓' : n.status === 'failed' ? ' ✗' : ''}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* 长任务提示 */}
+        {active && (
+          <Text style={{ marginTop: 8, fontSize: 12, color: isDark ? '#64748b' : '#b0b4bb' }}>
+            子任务在后台接力执行，您可以先去忙别的，完成后结果会自动发您
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+};
+
+export default DagProgressCard;

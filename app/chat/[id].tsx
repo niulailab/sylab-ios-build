@@ -15,8 +15,8 @@ import { botApi } from '../../src/api/bot';
 import { creditsApi } from '../../src/api/credits';
 import { filesApi } from '../../src/api/files';
 import { sendMessageStream } from '../../src/api/sse';
-import { chatQueueApi } from '../../src/api/chatQueue';
-import { useChatQueue } from '../../src/hooks/useChatQueue';
+import { queueManager } from '../../src/queue/queueTaskManager';
+import { AppEvents, subscribe } from '../../src/utils/events';
 import { MessageBubble } from '../../src/components/MessageBubble';
 import { ChatInput, getPendingFiles, clearPendingFiles } from '../../src/components/ChatInput';
 import { EmptyState } from '../../src/components/EmptyState';
@@ -24,6 +24,7 @@ import { SkeletonLoader } from '../../src/components/SkeletonLoader';
 import { TypingIndicator, getToolLabel } from '../../src/components/TypingIndicator';
 import { GenerationPlaceholder } from '../../src/components/GenerationPlaceholder';
 import { TaskStatusCard, getToolMeta } from '../../src/components/TaskStatusCard';
+import DagProgressCard from '../../src/components/DagProgressCard';
 import { Ionicons } from '@expo/vector-icons';
 import type { ChatMessage } from '../../src/types/api';
 
@@ -428,7 +429,46 @@ function ChatDetailScreenInner() {
   const navigation = useNavigation();
   const router = useRouter();
   const flatListRef = useRef<FlatList>(null);
+  // [FIX scroll 乱跳] 用“粘滞”状态：用户一旦上翻就锁定在原位置，只有他自己滚回底部/点回底/发消息才解除。
+  // 不再用定时器在停顿后自动交还控制权（旧逻辑停手 1.5s 后后台轮询就把视图拽回底部）。
   const isNearBottomRef = useRef(true);
+  const userScrollingRef = useRef(false);   // 粘滞：用户手动上翻后保持 true
+  const userScrollTimerRef = useRef<any>(null);
+  const didInitialScrollRef = useRef(false); // 首屏仅滚底一次，之后 onLayout 不再强行滚底
+  // [FIX2 抖动] 单一合并的“跟随到底”调度：一帧内多次内容/布局变化只滚一次；
+  // 流式内容长高阶段不滚（避免边追边抖），仅在跟随态且确有新内容时滚。
+  const followRafRef = useRef<any>(null);
+  const followPendingRef = useRef(false);
+  const requestFollow = (opts?: { force?: boolean }) => {
+    const force = !!(opts && opts.force);
+    // 用户正在上翻阅读：绝不跟随
+    if (userScrollingRef.current && !force) return;
+    if (!isNearBottomRef.current && !force) return;
+    if (followPendingRef.current) return;
+    followPendingRef.current = true;
+    if (followRafRef.current) { try { cancelAnimationFrame(followRafRef.current); } catch (_) {} }
+    followRafRef.current = requestAnimationFrame(() => {
+      followPendingRef.current = false;
+      followRafRef.current = null;
+      if (!force && (userScrollingRef.current || !isNearBottomRef.current)) return;
+      try { flatListRef.current?.scrollToEnd({ animated: false }); } catch (_) {}
+    });
+  };
+  const markUserScrolling = (duration?: number) => {
+    // duration 仅用于很短的松手惯性缓冲；位置判定以 handleScroll 为准
+    userScrollingRef.current = true;
+    if (userScrollTimerRef.current) clearTimeout(userScrollTimerRef.current);
+    if (duration) {
+      userScrollTimerRef.current = setTimeout(() => {
+        // 惯性结束后：若已经回到底部附近才解除跟随锁；否则继续锁定（关键：不自动解锁）
+        if (isNearBottomRef.current) userScrollingRef.current = false;
+      }, duration);
+    }
+  };
+  // 仅在用户位于底部附近且未手动上翻时自动跟随（统一走合并调度，杜绝一帧多次滚动打架）
+  const autoFollowToBottom = (_animated = false) => {
+    requestFollow();
+  };
 
   const { user, patToken, isRestoring } = useAuthStore();
   const userName = (() => {
@@ -448,41 +488,48 @@ function ChatDetailScreenInner() {
   // Auto-scroll when messages array changes (only if user is near bottom)
   const messagesLength = messages.length;
   useEffect(() => {
-    if (messagesLength > 0 && isNearBottomRef.current) {
+    if (messagesLength <= 0) return;
+    // 首屏/进入会话：只滚底一次
+    if (!didInitialScrollRef.current) {
+      didInitialScrollRef.current = true;
       requestAnimationFrame(() => {
         flatListRef.current?.scrollToEnd({ animated: false });
-        setTimeout(() => { if (isNearBottomRef.current) flatListRef.current?.scrollToEnd({ animated: false }); }, 100);
+        setTimeout(() => { flatListRef.current?.scrollToEnd({ animated: false }); }, 120);
       });
+      return;
     }
+    // 之后仅在跟随态（用户在底部且未上翻锁）才跟随；后台轮询/排序变化不打扰阅读
+    if (isNearBottomRef.current && !userScrollingRef.current) {
+      requestFollow();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messagesLength]);
 
-  // Auto-scroll during streaming (only if near bottom)
-  useEffect(() => {
-    if (isStreaming && isNearBottomRef.current) {
-      const timer = setTimeout(() => {
-        if (isNearBottomRef.current) flatListRef.current?.scrollToEnd({ animated: false });
-      }, 50);
-      return () => clearTimeout(timer);
-    }
-  }, [streamingContent, isNearBottomRef.current]);
+  // [FIX] Removed redundant streamingContent scroll effect - onContentSizeChange handles auto-scroll
 
   const [showScrollBtn, setShowScrollBtn] = useState(false);
-  const streamRef = useRef<{ abort: () => void } | null>(null);
-  const queueTaskIdRef = useRef<string | null>(null);
   const inFlightSendRef = useRef<string | null>(null);
-  const ssePollingTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const { registerTask, clearTask, activeTaskRef, getActiveTask } = useChatQueue(id as string);
 
   const scrollToBottom = () => {
+    // 用户主动回底/发消息：恢复跟随模式
+    userScrollingRef.current = false;
+    if (userScrollTimerRef.current) clearTimeout(userScrollTimerRef.current);
     isNearBottomRef.current = true;
-    flatListRef.current?.scrollToEnd({ animated: true });
+    try { flatListRef.current?.scrollToEnd({ animated: true }); } catch (_) {}
+    requestFollow({ force: true });
   };
 
   const handleScroll = (event: any) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
     const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
-    isNearBottomRef.current = distanceFromBottom < 150;
-    const shouldShow = distanceFromBottom > 200;
+    const near = distanceFromBottom < 120;
+    isNearBottomRef.current = near;
+    // [FIX scroll] 用户自己滚回了底部：解除上翻锁定，恢复跟随
+    if (near && userScrollingRef.current) {
+      userScrollingRef.current = false;
+      if (userScrollTimerRef.current) clearTimeout(userScrollTimerRef.current);
+    }
+    const shouldShow = distanceFromBottom > 240;
     setShowScrollBtn(prev => prev !== shouldShow ? shouldShow : prev);
   };
 
@@ -492,6 +539,137 @@ function ChatDetailScreenInner() {
   const [botName, setBotName] = useState(DEFAULT_BOT_NAME);
   const [botAvatar, setBotAvatar] = useState('');
   const [conversationId, setConversationId] = useState<string | null>(null);
+
+  // === wave4d-fix2: 内部消息判定 + 消息指纹（过滤/去重共用）===
+  const _isInternalMsg = (m: any): boolean => {
+    try {
+      if (!m || !m.id) return true;
+      const c = (m.content == null ? '' : String(m.content)).trim();
+      if (!c) return true;
+      if (c.includes('generate_answer_finish')) return true;
+      if (/^【DAG|^【TIMER|^【定时|^【CRON/.test(c)) return true; // DAG/定时内部触发气泡
+      if ((m.role || '') !== 'user') {
+        if (/^\{"index":\d+,"id":"call_/.test(c)) return true;  // function call
+        if (/^\{"code":\d+,"msg":/.test(c)) return true;        // tool result wrapper
+        if (c.includes('"function"') && c.includes('"arguments"')) return true;
+      }
+      return false;
+    } catch (e) { return false; }
+  };
+  const _isVisibleMsg = (m: any): boolean => {
+    if (!m || !m.id) return false;
+    const c = (m.content == null ? '' : String(m.content)).trim();
+    if ((m.role || '') === 'user') {
+      if (!c) return false;
+      if (/^【DAG|^【TIMER|^【定时|^【CRON/.test(c)) return false;
+      return true;
+    }
+    return !_isInternalMsg(m);
+  };
+  const _mkey = (m: any): string => {
+    try { return (m.role || '') + '|' + (m.content == null ? '' : String(m.content)).replace(/\s+/g, ' ').trim().slice(0, 120); }
+    catch (e) { return (m.role || ''); }
+  };
+
+  // === [FIX 消息闪一下消失] 服务端历史 vs 本地列表合并 ===
+  // 原则：用户已经在屏幕上看到的 AI 回复，绝不允许被后台轮询/历史刷新删掉。
+  // 服务端消息为权威全量保留；本地用户消息服务端未收录则保留；本地 assistant 回复
+  // 只要不与服务端任一回复重复就保留（后端瞬时未落库时，本地流式回复是唯一副本），
+  // 内容归一化（去 TRAE_REF/空白/emoji）后按头/尾指纹去重，最终按时间排序。
+  const _normContent = (m: any): string => {
+    try {
+      return ((m == null || m.content == null ? '' : String(m.content))
+        .replace(/\[\$TRAE_REF\]\([^)]*\)/g, '')
+        .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}]/gu, '')
+        .replace(/\s+/g, ' ').trim());
+    } catch (e) { return (m && m.content == null ? '' : String((m && m.content) || '')).trim(); }
+  };
+  const _mergeWithServerMsgs = (cur: any[], serverMsgs: any[]): any[] => {
+    const srv: any[] = serverMsgs || [];
+    const local: any[] = cur || [];
+    const serverIds = new Set(srv.map((m: any) => m && m.id).filter(Boolean));
+    const isInternal = (m: any) => /^【DAG|^【TIMER|^【定时|^【CRON/.test((((m && m.content) || '') + '').trim());
+    const srvSigs = new Set<string>();
+    const normSrv = new Map<any, string>();
+    for (const m of srv) {
+      if (!m || (m.role || '') !== 'assistant') continue;
+      const c = _normContent(m);
+      normSrv.set(m, c);
+      if (c.length >= 40) srvSigs.add('H:' + c.slice(0, 60));
+      if (c.length >= 8) srvSigs.add('HT:' + c.slice(0, 60) + '...' + c.slice(-60));
+    }
+    const localKeep = local.filter((m: any) => {
+      if (!m) return false;
+      if (serverIds.has(m.id)) return false;
+      if (isInternal(m)) return false;
+      const role = m.role || '';
+      if (role === 'user') return true;
+      if (role !== 'assistant') return false;
+      const c = _normContent(m);
+      if (!c) return false;
+      for (const [sm, sc] of normSrv.entries()) {
+        if (sc === c) return false;
+        if (sc.length >= 40 && c.length >= 40 && sc.slice(0, 60) === c.slice(0, 60)) return false;
+      }
+      if (c.length >= 40 && srvSigs.has('H:' + c.slice(0, 60))) return false;
+      if (c.length >= 8 && srvSigs.has('HT:' + c.slice(0, 60) + '...' + c.slice(-60))) return false;
+      return true;
+    });
+    const merged = [...localKeep, ...srv];
+    const seen = new Set<string>();
+    const dedup = merged.filter((m: any) => {
+      const k = _mkey(m);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    dedup.sort((a: any, b: any) => (_ts(a && a.created_at) || 0) - (_ts(b && b.created_at) || 0));
+    return dedup;
+  };
+
+  // === wave4d-fix2 background idle poll ===
+  // 后台 DAG/定时任务跑完，停留页面也自动刷出最终播报；服务端删除的内部气泡也会同步移除。
+  useEffect(() => {
+    let stopped = false;
+    let timer: any = null;
+    const tick = async () => {
+      if (stopped) return;
+      const cid = (conversationId || id || '') as string;
+      const st = useChatStore.getState();
+      if (!cid) { schedule(); return; }
+      if (st.isStreaming) { schedule(); return; }
+      try {
+        if ((Platform as any).OS === 'web' && typeof document !== 'undefined' && document.visibilityState === 'hidden') { schedule(); return; }
+      } catch (e) {}
+      try {
+        const result: any = await chatApi.getMessages(cid, { page_num: 1, page_size: 50 });
+        if (stopped) return;
+        const msgs = (result.items || [])
+          .filter(_isVisibleMsg)
+          .map((m: any) => ({ ...m, content: (m.content || '').replace(/\[\$TRAE_REF\]\([^)]*\)/g, '') }));
+        msgs.reverse();
+        const cur = useChatStore.getState().messages;
+        // [FIX 消息消失] 本地已渲染的 AI 回复不再被后台轮询丢弃（后端瞬时未落库时本地是唯一副本）
+        const dedup = _mergeWithServerMsgs(cur, msgs);
+        // 指纹集合对比：有新增播报 或 服务端删掉了内部气泡，都同步
+        const visCur = cur.filter(_isVisibleMsg);
+        const curKeys = new Set(visCur.map(_mkey));
+        const newKeys = new Set(dedup.map(_mkey));
+        let changed = dedup.length !== visCur.length;
+        if (!changed) { for (const k of newKeys) { if (!curKeys.has(k)) { changed = true; break; } } }
+        if (!changed) { for (const k of curKeys) { if (!newKeys.has(k)) { changed = true; break; } } }
+        if (changed) { useChatStore.getState().setMessages(dedup); }
+      } catch (e) {
+        try { console.warn('[POLL] tick failed:', e && (e as any).message || e); } catch (_) {}
+      }
+      schedule();
+    };
+    const schedule = () => { if (!stopped) { timer = setTimeout(tick, 10000); } };
+    timer = setTimeout(tick, 6000);
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, id]);
+
   const [currentBotId, setCurrentBotId] = useState<string>(
     bot_id || DEFAULT_BOT_ID
   );
@@ -502,7 +680,6 @@ function ChatDetailScreenInner() {
   const [availableBots, setAvailableBots] = useState<Array<{id: string; name: string; icon_url?: string}>>([]);
   // Video task polling
   const [videoTasks, setVideoTasks] = useState<Map<string, {taskId: string; status: string; url?: string; progress?: number; msgId?: string}>>(new Map());
-  const videoPollingRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   // Failed messages for retry
   const [failedMessages, setFailedMessages] = useState<Set<string>>(new Set());
 
@@ -537,6 +714,21 @@ function ChatDetailScreenInner() {
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
+  // [FIX2 抖动] 稳定的列表数据：搜索为空时直接复用 messages 引用，避免每渲染新建数组导致整列重建。
+  const visibleMessages = React.useMemo(() => {
+    if (!searchQuery) return messages as any[];
+    const q = searchQuery.toLowerCase();
+    const seen = new Set<string>();
+    return (messages as any[]).filter((m: any) => {
+      if (!m || !m.id) return false;
+      if (!((m.content || '') + '').toLowerCase().includes(q)) return false;
+      const _k = m.role + '|' + (m.content || '').trim().slice(0, 100) + '|' + Math.floor(Number(m.created_at) / (m.role === 'user' ? 5000 : 3000));
+      if (seen.has(_k)) return false;
+      seen.add(_k);
+      return true;
+    });
+  }, [messages, searchQuery]);
+
   // Message costs tracking
   const [messageCosts, setMessageCosts] = useState<Map<string, number>>(() => new Map());
   const costsVersionRef = useRef(0);
@@ -563,17 +755,14 @@ function ChatDetailScreenInner() {
   }, []);
 
 
-  const lastScrollTimeRef = useRef(0);
-  // Auto-scroll when activity status or streaming content changes
+  // [FIX2 抖动] 流式“内容长高”阶段不主动滚：气泡在列表底部 footer 内自然撑高，
+  // 反复 scrollToEnd 会与浏览器/原生滚动位打架产生上下抖。仅在“刚进入流式”且跟随态时贴一次底。
   useEffect(() => {
     if (useChatStore.getState().isStreaming) {
-      const now = Date.now();
-      if (now - lastScrollTimeRef.current > 300) {
-        lastScrollTimeRef.current = now;
-        setTimeout(() => scrollToBottom(), 100);
-      }
+      if (!userScrollingRef.current && isNearBottomRef.current) requestFollow();
     }
-  }, [activityStatus, streamingContent, generatingType, isStreaming]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming]);
 
   const lastLoadMoreRef = useRef(0);
   const loadMoreMessages = async () => {
@@ -588,7 +777,7 @@ function ChatDetailScreenInner() {
     try {
       const nextPage = page + 1;
       const result = await chatApi.getMessages(convId, { page_num: nextPage, page_size: 50 });
-      const msgs = (result.items || []).filter((m: any) => m && m.id && (m.role === "user" || (m.content && m.content.trim() && !m.content.includes("generate_answer_finish")))).map((m: any) => ({...m, content: m.content?.replace(/[$TRAE_REF](.*?)/g, "")})).reverse();
+      const msgs = (result.items || []).filter(_isVisibleMsg).map((m: any) => ({...m, content: m.content?.replace(/\[\$TRAE_REF\]\([^)]*\)/g, "")})).reverse();
       if (msgs.length === 0) {
         setHasMore(false);
       } else {
@@ -649,12 +838,8 @@ function ChatDetailScreenInner() {
   const lastProcessedConvRef = useRef<string | null>(null);
 
   useEffect(() => {
-    // Abort any in-flight stream from a previous conversation before switching
-    if (streamRef.current) {
-      try { streamRef.current.abort(); } catch (e) {}
-      streamRef.current = null;
-    }
-    // Reset streaming state so stale "connecting" indicator never carries over
+    // [QM] 全局任务管理器持有连接：切会话/离开不再中断流。
+    // 仅重置本页流式态；若本会话有活跃任务，attach effect 会重新灌入快照。
     if (useChatStore.getState().isStreaming) {
       console.log('[Chat] Resetting stale streaming state on conversation switch');
       useChatStore.getState().clearStreaming();
@@ -708,7 +893,7 @@ function ChatDetailScreenInner() {
         } else {
           setConversationId(id);
           const result = await chatApi.getMessages(id, { page_num: 1, page_size: 50 });
-          const msgs = (result.items || []).filter((m: any) => m && m.id && (m.role === "user" || (m.content && m.content.trim() && !m.content.includes("generate_answer_finish")))).map((m: any) => ({...m, content: m.content?.replace(/[$TRAE_REF](.*?)/g, "")}));
+          const msgs = (result.items || []).filter(_isVisibleMsg).map((m: any) => ({...m, content: m.content?.replace(/\[\$TRAE_REF\]\([^)]*\)/g, "")}));
           msgs.reverse();
           if (!cancelled) {
             
@@ -774,139 +959,118 @@ function ChatDetailScreenInner() {
     init();
     return () => {
       cancelled = true;
-      if (ssePollingTimerRef.current) { clearTimeout(ssePollingTimerRef.current); ssePollingTimerRef.current = null; }
-      // Abort SSE when navigating away from this chat screen
-      if (streamRef.current) {
-        try { streamRef.current.abort(); } catch (e) {}
-        streamRef.current = null;
-      }
+      // [QM] 离开聊天页不中断全局任务连接（流由 queueManager 持有）
     };
   }, [id, user, isRestoring]);
 
 
-  // === Recover pending queue task after page remount ===
+  // === [QM] 进入聊天页：接入全局任务管理器 ===
+  // 离开页面不卸载任务：SSE 由全局单例持有；切后台/杀掉 APP 重开由 manager 自动恢复。
   useEffect(() => {
-    const recoverPendingTask = async () => {
-      // Clear any orphaned localStorage tasks from previous conversations
-      if (!user) return;
-      // Check for active task belonging to THIS conversation
-      const task = getActiveTask(id as string);
-      if (!task) {
-        // No task for this conversation - clean up any orphaned tasks
-        try {
-          if (Platform.OS === 'web') {
-            const keys = Object.keys(localStorage).filter(k => k.startsWith('sylab_active_queue_task_') && !k.endsWith(id as string));
-            keys.forEach(k => localStorage.removeItem(k));
-          }
-        } catch(e) {}
-        return;
-      }
-      if (!task.isStreaming) return;
-      // Double-check: only recover tasks belonging to THIS conversation
-      if (task.conversationId !== id) {
-        console.log('[ChatQueue] Skipping task from different conversation:', task.conversationId, 'vs', id);
-        return;
-      }
+    // [QM-FIX] attach 目标用 conversationId||id：新会话创建后 router.replace，
+    // 真实会话 id 才生效；仅用路由 id 会和 task.conversationId 对不上，导致
+    // 状态/正文事件被丢弃（实时状态卡一直停在"正在思考理解"）。
+    const attachId = (conversationId || id || '') as string;
+    if (!attachId) return;
 
-      console.log('[ChatQueue] Recovering pending task on mount:', task.taskId);
-      try {
-        const status = await chatQueueApi.getStatus(task.taskId);
-        if (status.status === 'processing') {
-          // Task still running on server - reconnect stream
-          console.log('[ChatQueue] Task still processing, resuming stream');
-          startStreaming();
-          chatQueueApi.connectStream(task.taskId, {
-            onDelta: (text) => appendDelta(text),
-            onComplete: (chatId) => {
-              const cid = chatId || `msg_${Date.now()}`;
-              const cap = useChatStore.getState().streamingContent;
-              useChatStore.setState({ isStreaming: false, streamingContent: '', streamingMessageId: null, activityStatus: '', generatingType: null });
-              if (cap) {
-                const _cur = useChatStore.getState().messages;
-                if (!_cur.some(m => m.id === cid || (m.role === 'assistant' && m.content === cap))) {
-                  setMessages([..._cur, { id: cid, conversation_id: id || '', role: 'assistant', type: 'text', content: cap, content_type: 'markdown', created_at: String(Date.now()), updated_at: String(Date.now()) }]);
-                }
-              }
-              clearTask();
-            },
-            onError: (err) => {
-              console.error('[ChatQueue] Recovery stream error:', err);
-              // Fall back to polling
-              const pollRecovery = async () => {
-                const t = getActiveTask();
-                if (!t || t.taskId !== task.taskId) return;
-                try {
-                  const st = await chatQueueApi.getStatus(task.taskId);
-                  if (st.status === 'completed') {
-                    const { events } = await chatQueueApi.getEvents(task.taskId, t.lastEventIndex);
-                    for (const event of events) {
-                      t.lastEventIndex = event.index + 1;
-                      if (event.event_type === 'conversation.message.delta' && event.data?.content) {
-                        appendDelta(event.data.content);
-                      }
-                    }
-                    finishStreaming(st.chat_id || `msg_${Date.now()}`);
-                    clearTask();
-                  } else if (st.status === 'failed') {
-                    setError(st.error || 'Background task failed');
-                    finishStreaming(`msg_${Date.now()}`);
-                    clearTask();
-                  } else {
-                    const { events } = await chatQueueApi.getEvents(task.taskId, t.lastEventIndex);
-                    for (const event of events) {
-                      t.lastEventIndex = event.index + 1;
-                      if (event.event_type === 'conversation.message.delta' && event.data?.content) {
-                        appendDelta(event.data.content);
-                      }
-                    }
-                    setTimeout(pollRecovery, 3000);
-                  }
-                } catch (pe) {
-                  setTimeout(pollRecovery, 5000);
-                }
-              };
-              setTimeout(pollRecovery, 2000);
-            },
-          });
-        } else if (status.status === 'completed') {
-          // Task completed while we were away - fetch results
-          console.log('[ChatQueue] Task completed while away, recovering results');
-          startStreaming();
-          let awayAccum = '';
-          const { events } = await chatQueueApi.getEvents(task.taskId, task.lastEventIndex);
-          for (const event of events) {
-            task.lastEventIndex = event.index + 1;
-            if (event.event_type === 'conversation.message.delta' && event.data?.content) {
-              awayAccum += event.data.content;
-            }
-          }
-          const awayId = status.chat_id || `msg_${Date.now()}`;
-          useChatStore.setState({ isStreaming: false, streamingContent: '', streamingMessageId: null, activityStatus: '', generatingType: null });
-          if (awayAccum) {
-            const _cur = useChatStore.getState().messages;
-            if (!_cur.some(m => m.id === awayId || (m.role === 'assistant' && m.content === awayAccum))) {
-              setMessages([..._cur, { id: awayId, conversation_id: id || '', role: 'assistant', type: 'text', content: awayAccum, content_type: 'markdown', created_at: String(Date.now()), updated_at: String(Date.now()) }]);
-            }
-          }
-          clearTask();
-        } else if (status.status === 'failed') {
-          setError(status.error || 'Background task failed');
-          clearTask();
-        }
-      } catch (e) {
-        console.error('[ChatQueue] Recovery failed:', e);
-        clearTask();
-      }
+    // [FIX 消息消失] 抽取历史拉取+合并：onComplete 和 onReloadHistory 共用。
+    // 流式结束后调用，把服务端已落库的最终 AI 回复合并进消息列表，避免临时气泡清空后消息"消失"。
+    let reloading = false;
+    const reloadHistoryOnce = (target: string) => {
+      if (!target || reloading) return;
+      reloading = true;
+      chatApi.getMessages(target, { page_num: 1, page_size: 50 }).then((result: any) => {
+        const msgs = (result.items || [])
+          .filter(_isVisibleMsg)
+          .map((m: any) => ({ ...m, content: (m.content || '').replace(/\[\$TRAE_REF\]\([^)]*\)/g, '') }));
+        msgs.reverse();
+        const existing = useChatStore.getState().messages;
+        // [FIX 消息消失] 保留本地已渲染的 AI 回复；服务端同内容自动去重替换，绝不删用户已见回复
+        const dedup = _mergeWithServerMsgs(existing, msgs);
+        setMessages(dedup);
+      }).catch(() => {}).finally(() => { setTimeout(() => { reloading = false; }, 800); });
     };
 
-    recoverPendingTask();
-  }, []);
+    queueManager.detach(attachId);
+    queueManager.attach(attachId, {
+      onComplete: (chatId: string, convId: string) => {
+        try {
+          // [FIX 消息消失] 流式结束后立即拉一次服务端历史，把最终 AI 回复落进消息列表。
+          // 否则结束瞬间临时流式气泡被清空、正式消息未写入，要重进页面才出现。
+          const reloadTarget = convId || ((conversationId || id || '') as string);
+          if (reloadTarget) {
+            setTimeout(() => { reloadHistoryOnce(reloadTarget); }, 400);
+          }
+          // 刷新成本展示（拉最近交易匹配本条消息）
+          const userId = user?.id || '';
+          if (userId) {
+            creditsApi.getTransactions(userId, { page: 1, page_size: 3 }).then((txResult: any) => {
+              const txItems = txResult.items || [];
+              const now = Date.now();
+              for (const tx of txItems) {
+                const txTime = new Date(tx.created_at).getTime();
+                if (Math.abs(txTime - now) < 30000 && tx.cost > 0) {
+                  setMessageCosts((prev: Map<string, number>) => {
+                    const next = new Map(prev);
+                    next.set(chatId, tx.cost);
+                    return next;
+                  });
+                  break;
+                }
+              }
+            }).catch(() => {});
+          }
+          // 继续发送队列里排队的下一条消息
+          setTimeout(() => {
+            const check = () => {
+              if (!useChatStore.getState().isStreaming) { processQueue(); }
+              else { setTimeout(check, 200); }
+            };
+            check();
+          }, 300);
+        } catch (e) {}
+      },
+      onError: (msg: string, status?: number, code?: string) => {
+        try {
+          // 401 未登录：直接引导去登录页（强制登录策略）
+          if (status === 401 || code === 'auth_required') {
+            setError('请先登录后再使用');
+            setTimeout(() => { try { router.replace('/login'); } catch (e) {} }, 800);
+            return;
+          }
+          setError(msg || '任务失败');
+          if (lastUserMsgRef.current) {
+            setFailedMessages((prev) => new Set(prev).add(lastUserMsgRef.current!.id));
+          }
+        } catch (e) {}
+      },
+      // [patch 2026-09-09] 任务已在服务端结束（完成/失败/中转缓存过期）：
+      // 静默结束转圈并刷新会话历史——结果永久保存在服务端历史里
+      onReloadHistory: (convId: string) => {
+        try {
+          const target = convId || ((conversationId || id || '') as string);
+          if (target) reloadHistoryOnce(target);
+        } catch (e) {}
+      },
+    });
+    // 同步全局视频任务状态
+    const syncVideo = () => {
+      setVideoTasks(new Map(queueManager.getVideoTasks()) as any);
+    };
+    syncVideo();
+    const unsubVideo = subscribe(AppEvents.CHAT_VIDEO_UPDATED, syncVideo);
+    return () => {
+      unsubVideo();
+      queueManager.detach(attachId);
+      // [QM] 不清理 streaming store：离开后任务继续，返回时 attach 重建状态
+    };
+  }, [id, conversationId]);
 
   // Auto-scroll useEffect removed to prevent infinite scroll loop
 
-  const handleLongPress = (message: ChatMessage) => {
+  const handleLongPress = React.useCallback((message: ChatMessage) => {
     setLongPressMenu({ visible: true, message });
-  };
+  }, []);
 
   const closeMenu = () => {
     setLongPressMenu({ visible: false, message: null });
@@ -944,7 +1108,19 @@ function ChatDetailScreenInner() {
   const effectiveConvId = conversationId || id || '';
 
   const handleSend = async (text: string, _files?: any[], fileIds?: string[]) => {
+    // 强制登录：未登录不允许发起对话，直接跳登录页
+    if (!useAuthStore.getState().user?.id) {
+      setError('请先登录后再使用');
+      try { router.replace('/login'); } catch (e) {}
+      return;
+    }
     if (!patToken) return; if (!text.trim() && (!fileIds || fileIds.length === 0)) return;
+
+    // [FIX scroll] 用户主动发消息：恢复跟随并滚到底部，以便看到新回复
+    userScrollingRef.current = false;
+    if (userScrollTimerRef.current) clearTimeout(userScrollTimerRef.current);
+    isNearBottomRef.current = true;
+    setTimeout(() => { flatListRef.current?.scrollToEnd({ animated: true }); }, 350);
 
     // Ensure conversationId is set; create conversation if needed
     let currentConvId = conversationId || id;
@@ -981,15 +1157,16 @@ function ChatDetailScreenInner() {
         conversation_id: effectiveConvId,
         role: 'user',
         type: qHasImage && qFirstImg ? 'image_url' : 'text',
-        content: qHasImage && qFirstImg ? qFirstImg : text,
+        content: qHasImage && qFirstImg ? `[IMG:${qFirstImg}]${text}` : text,
         content_type: qHasImage && qFirstImg ? 'image_url' : 'text',
         created_at: String(Date.now()),
         updated_at: String(Date.now()),
       };
       lastUserMsgRef.current = userMsg;
-      if (!_isDuplicateUserMsg(effectiveConvId, userMsg.content, Number(userMsg.created_at))) {
+      {
         const _prevA = useChatStore.getState().messages;
-        if (!_prevA.some(m => m.id === userMsg.id)) {
+        const _qContentDup = _prevA.some(m => m.role === user && m.content === userMsg.content && Math.abs(_ts(m.created_at) - _ts(userMsg.created_at)) < 10000);
+        if (!_isDuplicateUserMsg(effectiveConvId, userMsg.content, Number(userMsg.created_at)) && !_qContentDup && !_prevA.some(m => m.id === userMsg.id)) {
           setMessages([..._prevA, userMsg]);
           _sessionMessages = [..._sessionMessages, userMsg];
         }
@@ -1040,7 +1217,7 @@ function ChatDetailScreenInner() {
       conversation_id: effectiveConvId,
       role: 'user',
       type: hasImageFiles && firstImageUrl ? 'image_url' : 'text',
-      content: hasImageFiles && firstImageUrl ? firstImageUrl : finalContent,
+      content: hasImageFiles && firstImageUrl ? `[IMG:${firstImageUrl}]${finalContent}` : finalContent,
       content_type: hasImageFiles && firstImageUrl ? 'image_url' : 'text',
       created_at: String(Date.now()),
       updated_at: String(Date.now()),
@@ -1117,443 +1294,24 @@ function ChatDetailScreenInner() {
     const localConvId = conversationId;
     let localAiAccum = "";
 
-    // === Chat Queue: submit task for background resilience (fire-and-forget, don't block SSE) ===
-    let queueSubmitResolve: ((id: string) => void) | null = null;
-    const queueSubmitPromise = new Promise<string>((res) => { queueSubmitResolve = res; });
-    chatQueueApi.submit({
-      bot_id: currentBotId,
-      user_id: user?.id || 'app_user',
-      conversation_id: effectiveConvId || undefined,
-      additional_messages: additionalMsgs,
-      stream: true,
-      auto_save_history: true,
-      bearer_token: patToken || '',
-    }, patToken || '').then((queueResp) => {
-      queueTaskIdRef.current = queueResp.task_id;
-      registerTask(queueResp.task_id, effectiveConvId || '');
-      console.log('[ChatQueue] Task submitted:', queueResp.task_id);
-      if (queueSubmitResolve) queueSubmitResolve(queueResp.task_id);
-    }).catch((qe) => {
-      console.warn('[ChatQueue] Submit failed (non-blocking):', qe);
-      if (queueSubmitResolve) queueSubmitResolve('');
-    });
-
-
-
-    setActivityStatus("正在思考理解…");
-    streamRef.current = sendMessageStream(
+    // === Chat Queue PRIMARY mode: task runs on the server and survives
+    // app/background disconnects. This submit promise is awaited by the
+    // queue stream adapter below; the task persists server-side either way. ===
+    // [QM] 任务交由全局队列管理器：离开页面/切后台/杀掉 APP 均不中断；
+    // delta/工具事件/完成收尾(落库/命名/附件)/视频轮询全部由 manager 全局处理
+    queueManager.startTask(
       {
         bot_id: currentBotId,
-        user_id: user?.id || 'app_user',
+        user_id: user?.id || '',
         conversation_id: effectiveConvId || undefined,
         additional_messages: additionalMsgs,
         stream: true,
         auto_save_history: true,
+        bearer_token: patToken || '',
+        mode: 'primary',
       },
-      patToken || "",
-      {
-        onDelta: (delta) => {
-          sseReceivedData = true;
-          const cleanDelta = stripEmoji(delta);
-          localAiAccum += cleanDelta;
-          appendDelta(cleanDelta);
-        },
-        onToolCall: (name, args, result) => {
-          if (result) {
-            lastToolCompleteRef.current = Date.now();
-            setActivityStatus(`${getToolLabel(name)}完成`);
-          } else {
-            setActivityStatus(`正在${getToolLabel(name)}…`);
-          }
-          appendToolCall(name, args, result);
-          // Detect video task_id from tool result and start polling immediately
-          if (result && (name === 'video_generate' || name === 'generate_video')) {
-            try {
-              const parsed = typeof result === 'string' ? JSON.parse(result) : result;
-              const resultData = typeof parsed.data === 'string' ? JSON.parse(parsed.data) : (parsed.data || parsed);
-              const taskId = resultData.task_id || resultData.taskId;
-              if (taskId && taskId.startsWith('task_')) {
-                console.log('[Video] Detected task_id from tool result:', taskId);
-                // Store for later msgId association
-                if (!(globalThis as any).__pendingVideoTasks) (globalThis as any).__pendingVideoTasks = [];
-                (globalThis as any).__pendingVideoTasks.push(taskId);
-                // Start polling immediately with empty msgId (will be updated in onComplete)
-                startVideoPolling(taskId, '');
-              }
-            } catch (e) {
-              console.warn('[Video] Failed to parse tool result:', e);
-            }
-          }
-        },
-        onComplete: (chatId, convId, tokens) => {
-          sseCompleted = true;
-          try {
-          // Clear queue task - SSE completed normally
-          // Cancel standby queue task: wait briefly for submit promise to resolve,
-          // then cancel with a retry so a fast SSE completion can never cause duplicate messages.
-          (async () => {
-            try {
-              const tid = await Promise.race([
-                queueSubmitPromise,
-                new Promise<string>((r) => setTimeout(() => r(queueTaskIdRef.current || ''), 3000)),
-              ]);
-              const taskId = tid || queueTaskIdRef.current;
-              if (taskId) {
-                for (let attempt = 0; attempt < 3; attempt++) {
-                  try {
-                    await chatQueueApi.cancel(taskId);
-                    console.log('[ChatQueue] Cancelled standby task:', taskId);
-                    break;
-                  } catch (ce) {
-                    console.warn('[ChatQueue] Cancel attempt', attempt + 1, 'failed:', ce);
-                    await new Promise((r) => setTimeout(r, 400));
-                  }
-                }
-              }
-            } catch (e) {
-              console.warn('[ChatQueue] Cancel flow error:', e);
-            }
-          })();
-          clearTask();
-          // Use closure-captured content (immune to store/state resets)
-          const capturedAiContent = stripEmoji(localAiAccum || useChatStore.getState().streamingContent);
-          const aiMsgId = chatId || `msg_${Date.now()}`;
-          // Capture toolCalls from store BEFORE clearing streaming state
-          const savedToolCalls = useChatStore.getState().toolCalls;
-          // Clear streaming state FIRST so the streaming footer disappears immediately
-          // Then add the final message - this prevents both showing at once (duplicate)
-          useChatStore.setState({
-            isStreaming: false,
-            streamingContent: '',
-            streamingMessageId: null,
-            activityStatus: '',
-            generatingType: null,
-          });
-          if (capturedAiContent) {
-            const aiMsg: ChatMessage = {
-              id: aiMsgId,
-              conversation_id: convId || effectiveConvId || '',
-              role: 'assistant',
-              type: 'text',
-              content: capturedAiContent,
-              content_type: 'markdown',
-              tool_calls: savedToolCalls.length > 0 ? savedToolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.arguments || '{}' } })) : undefined,
-              created_at: String(Date.now()),
-              updated_at: String(Date.now()),
-            };
-            // Deduplicate: remove any existing message with same id OR same assistant content within 5s
-            const _cur = useChatStore.getState().messages;
-            const _now = Date.now();
-            const filtered = _cur.filter(m =>
-              m.id !== aiMsgId &&
-              !(m.role === 'assistant' && m.content === capturedAiContent && Math.abs(_ts(m.created_at) - _now) < 5000)
-            );
-            // Avoid duplicate assistant message with same content
-            const _aiDup = filtered.some(m => m.role === 'assistant' && m.content === capturedAiContent);
-            if (!_aiDup) {
-              setMessages([...filtered, aiMsg]);
-            } else {
-              setMessages(filtered);
-            }
-          }
-          console.log("[Chat] onComplete: localAi:", localAiAccum.length, "localUser:", localUserContent.length, "sessionMsgs:", _sessionMessages.length, "tokens:", tokens);
-          // Token-based billing: deduct credits based on actual token usage
-          const currentAiMsgId = aiMsgId;
-          if (tokens && tokens.total > 0) {
-            setTimeout(async () => {
-              try {
-                const userId = user?.id || 'app_user';
-                const result = await creditsApi.deductByTokens(userId, tokens.total);
-                const costNum = parseFloat(result.cost) || 0;
-                if (costNum > 0) {
-                  setMessageCosts(prev => {
-                    const next = new Map(prev);
-                    next.set(currentAiMsgId, costNum);
-                    return next;
-                  });
-                  console.log('[Chat] Token deduction:', tokens.total, 'tokens -> cost:', costNum);
-                }
-              } catch (e) {
-                console.warn('[Chat] Token deduction failed (non-blocking):', e);
-              }
-            }, 100);
-          } else {
-            // Fallback: query recent transaction for legacy cost matching
-            setTimeout(async () => {
-              try {
-                const userId = user?.id || 'app_user';
-                const txResult = await creditsApi.getTransactions(userId, { page: 1, page_size: 3 });
-                const txItems = txResult.items || [];
-                const now = Date.now();
-                for (const tx of txItems) {
-                  const txTime = new Date(tx.created_at).getTime();
-                  if (Math.abs(txTime - now) < 30000 && tx.cost > 0) {
-                    setMessageCosts(prev => {
-                      const next = new Map(prev);
-                      next.set(currentAiMsgId, tx.cost);
-                      return next;
-                    });
-                    break;
-                  }
-                }
-              } catch (e) {
-                console.warn('[Chat] Failed to query transaction cost:', e);
-              }
-            }, 500);
-          }
-          // Detect and poll video tasks in AI response
-          if (capturedAiContent) {
-            detectAndPollVideoTasks(capturedAiContent, aiMsgId);
-          }
-          // Also associate pending video tasks (detected from tool results) with this AI message
-          if ((globalThis as any).__pendingVideoTasks && (globalThis as any).__pendingVideoTasks.length > 0) {
-            const pendingTaskIds = (globalThis as any).__pendingVideoTasks;
-            (globalThis as any).__pendingVideoTasks = [];
-            for (const taskId of pendingTaskIds) {
-              setVideoTasks(prev => {
-                const next = new Map(prev);
-                const existing = next.get(taskId);
-                if (existing && !existing.msgId) {
-                  next.set(taskId, { ...existing, msgId: aiMsgId });
-                }
-                return next;
-              });
-            }
-          }
-          // Process next queued message
-          setTimeout(() => { const checkAndProcess = () => { if (!useChatStore.getState().isStreaming) { processQueue(); } else { setTimeout(checkAndProcess, 200); } }; checkAndProcess(); }, 300);
-          // Determine the real conversation ID (prefer server-returned convId)
-          const realConvId = convId || effectiveConvId;
-          if (convId && !conversationId) {
-            setConversationId(convId);
-          }
-          // Upload pending files (from new conversation with no convId at send time)
-          if (realConvId) {
-            const pendingFiles = getPendingFiles();
-            if (pendingFiles.length > 0) {
-              for (const pf of pendingFiles) {
-                fetch('https://s.symsgf.xyz/project-files/api/files/upload', {
-                  method: 'POST',
-                  headers: {
-                    'X-Conversation-Id': realConvId,
-                    'X-File-Name': pf.name,
-                    'Content-Type': pf.type,
-                  },
-                  body: pf.blob,
-                }).catch(e => console.warn('[Chat] Pending file upload failed:', e));
-              }
-              clearPendingFiles();
-            }
-            // Also try sync for backward compatibility
-            const tempId = id as string;
-            if (tempId && tempId !== realConvId) {
-              filesApi.sync(tempId, realConvId).then(result => {
-                if (result.synced > 0) {
-                  console.log(`[Chat] Synced ${result.synced} files from ${tempId} to ${realConvId}`);
-                }
-              }).catch((e: any) => console.warn('[Chat] File sync failed:', e.message));
-            }
-          }
-          const saveConvId = realConvId;
-          // === IMMEDIATE SAVE using closure-captured variables ===
-          if (saveConvId) {
-            const saveMessages: Array<{role: string; content: string; created_at: string}> = [];
-            // User message from closure (always available)
-            if (localUserContent) {
-              saveMessages.push({ role: 'user', content: localUserContent, created_at: String(Date.now()) });
-            }
-            // AI message from closure accumulator
-            if (capturedAiContent) {
-              saveMessages.push({ role: 'assistant', content: capturedAiContent, created_at: String(Date.now()) });
-            }
-            if (saveMessages.length > 0) {
-              console.log("[Chat] Saving chat log. convId:", saveConvId, "msgs:", saveMessages.length, "userLen:", localUserContent.length, "aiLen:", capturedAiContent.length);
-              filesApi.saveChatLog(saveConvId, saveMessages).catch(e => {
-                console.warn("[Chat] Immediate save failed:", e);
-              });
-            }
-            // Backup: fetch from Coze API after 3s to ensure complete history
-            setTimeout(async () => {
-              try {
-                const msgResult = await chatApi.getMessages(saveConvId, { page_num: 1, page_size: 50 });
-                const apiMessages = (msgResult.items || []).filter((m: any) => m.role === 'user' || m.role === 'assistant');
-                if (apiMessages.length > 0) {
-                  const apiLogMessages = apiMessages.map((m: any) => ({
-                    role: m.role,
-                    content: m.content || '',
-                    created_at: m.created_at || String(Date.now()),
-                  }));
-                  await filesApi.saveChatLog(saveConvId, apiLogMessages);
-                  console.log("[Chat] API backup save done. msgs:", apiLogMessages.length);
-                }
-              } catch (e) {
-                console.warn("[Chat] API backup failed:", e);
-              }
-            }, 3000);
-          }
-          // Auto-name conversation from first user message (using closure variable)
-          if (saveConvId && localUserContent) {
-            const autoName = stripMarkdown(localUserContent).substring(0, 30);
-            if (autoName) {
-              chatApi.updateConversation(saveConvId, { name: autoName }).catch(() => {});
-            }
-          }
-          } catch (e) { console.error("[Chat] onComplete error:", e); }
-        },
-        onMessageComplete: () => { /* streaming ends via onComplete */ },
-        onError: (err) => {
-          console.error('[Chat] SSE error FULL:', err.message, err.stack, 'queueTaskId:', queueTaskIdRef.current, 'convId:', effectiveConvId, 'botId:', currentBotId, 'receivedData:', sseReceivedData, 'completed:', sseCompleted);
-          // GUARD 1: If onComplete already fired, never start queue (prevents duplicate request)
-          if (sseCompleted) {
-            console.log('[ChatQueue] SSE already completed, ignoring error');
-            return;
-          }
-
-          const activateQueue = () => {
-            if (sseCompleted) { console.log('[ChatQueue] SSE completed during delay, skipping'); return; }
-            if (!queueTaskIdRef.current || !activeTaskRef.current) {
-              // No queue task available - show error
-              setError(err.message);
-              finishStreaming(`msg_${Date.now()}`);
-              if (lastUserMsgRef.current) {
-                setFailedMessages(prev => new Set(prev).add(lastUserMsgRef.current!.id));
-              }
-              return;
-            }
-            // Start standby queue task to fetch response
-            console.log('[ChatQueue] Starting queue task:', queueTaskIdRef.current);
-            chatQueueApi.start(queueTaskIdRef.current!).catch(e => console.warn('[ChatQueue] Start failed:', e));
-
-            // Poll queue for results
-            const pollQueue = async () => {
-              if (sseCompleted) return;
-              const task = activeTaskRef.current;
-              if (!task || task.taskId !== queueTaskIdRef.current) return;
-              try {
-                const status = await chatQueueApi.getStatus(queueTaskIdRef.current!);
-                if (status.status === 'completed') {
-                  const { events } = await chatQueueApi.getEvents(queueTaskIdRef.current!, task.lastEventIndex);
-                  for (const event of events) {
-                    task.lastEventIndex = event.index + 1;
-                    if (event.event_type === 'conversation.message.delta' && event.data?.content) {
-                      localAiAccum += event.data.content;
-                      appendDelta(event.data.content);
-                    }
-                  }
-                  const aiMsgId = status.chat_id || `msg_${Date.now()}`;
-                  if (localAiAccum) {
-                    const _cur = useChatStore.getState().messages;
-                    setMessages([..._cur.filter(m => m.id !== aiMsgId), {
-                      id: aiMsgId,
-                      conversation_id: effectiveConvId || '',
-                      role: 'assistant',
-                      type: 'text',
-                      content: localAiAccum,
-                      content_type: 'markdown',
-                      created_at: String(Date.now()),
-                      updated_at: String(Date.now()),
-                    }]);
-                  }
-                  useChatStore.setState({ isStreaming: false, streamingContent: '', streamingMessageId: null, activityStatus: '', generatingType: null });
-                  clearTask();
-                } else if (status.status === 'failed') {
-                  setError(status.error || 'Background task failed');
-                  finishStreaming(`msg_${Date.now()}`);
-                  clearTask();
-                  if (lastUserMsgRef.current) {
-                    setFailedMessages(prev => new Set(prev).add(lastUserMsgRef.current!.id));
-                  }
-                } else {
-                  const { events } = await chatQueueApi.getEvents(queueTaskIdRef.current!, task.lastEventIndex);
-                  for (const event of events) {
-                    task.lastEventIndex = event.index + 1;
-                    if (event.event_type === 'conversation.message.delta' && event.data?.content) {
-                      localAiAccum += event.data.content;
-                      appendDelta(event.data.content);
-                    }
-                  }
-                  ssePollingTimerRef.current = setTimeout(pollQueue, 3000);
-                }
-              } catch (pe) {
-                console.error('[ChatQueue] Poll error:', pe);
-                ssePollingTimerRef.current = setTimeout(pollQueue, 5000);
-              }
-            };
-            ssePollingTimerRef.current = setTimeout(pollQueue, 2000);
-          };
-
-          // GUARD 2: If SSE already received data, it was actively working.
-          // Wait 2s before starting queue - onComplete may still fire.
-          if (sseReceivedData) {
-            console.log('[ChatQueue] SSE had data before error, waiting 2s before queue');
-            setTimeout(activateQueue, 2000);
-          } else {
-            // No data received at all - start queue immediately
-            activateQueue();
-          }
-        },
-        onStatus: (status) => {
-          console.log('[SSE status]', status);
-          if (!status) return;
-          const store = useChatStore.getState();
-          const current = store.activityStatus;
-          const hasRunningTool = store.toolCalls.some(tc => !tc.result);
-          const now = Date.now();
-          const sinceToolComplete = now - lastToolCompleteRef.current;
-          // Keep "X完成" visible for at least 1.2s so user sees the transition
-          const completionVisible = current.endsWith("完成") && sinceToolComplete < 1200;
-          if (status === "streaming") {
-            setActivityStatus("正在输入回复…");
-          } else if (status === "tool_running") {
-            return;
-          } else if (status === "thinking" || status === "thinking_deep" || status === "thinking_long") {
-            if (hasRunningTool) return;
-            const thinkingLabels: Record<string, string> = {
-              thinking: "正在思考理解…",
-              thinking_deep: "正在深度思考…",
-              thinking_long: "AI 正在努力分析中，请稍候…",
-            };
-            const label = thinkingLabels[status] || "正在思考理解…";
-            if (completionVisible) {
-              setTimeout(() => {
-                const s = useChatStore.getState();
-                if (!s.toolCalls.some(tc => !tc.result) && s.activityStatus.endsWith("完成")) {
-                  setActivityStatus(label);
-                }
-              }, 1200 - sinceToolComplete);
-              return;
-            }
-            setActivityStatus(label);
-          } else if (status === "reasoning") {
-            if (!hasRunningTool) {
-              if (completionVisible) {
-                setTimeout(() => {
-                  const s = useChatStore.getState();
-                  if (!s.toolCalls.some(tc => !tc.result) && s.activityStatus.endsWith("完成")) {
-                    setActivityStatus("正在理解问题…");
-                  }
-                }, 1200 - sinceToolComplete);
-                return;
-              }
-              setActivityStatus("正在理解问题…");
-            }
-          } else if (status === "tool_result") {
-            // Brief "获取结果中…" then back to thinking
-            setActivityStatus("获取结果中…");
-            setTimeout(() => {
-              const s = useChatStore.getState();
-              if (s.activityStatus === "获取结果中…") {
-                if (s.toolCalls.some(tc => !tc.result)) return;
-                setActivityStatus("正在思考理解…");
-              }
-            }, 1500);
-          } else if (status === "complete") {
-            setActivityStatus("");
-          } else {
-            setActivityStatus(status);
-          }
-        },
-      }
+      patToken || '',
+      localUserContent || ''
     );
   };
 
@@ -1569,110 +1327,9 @@ function ChatDetailScreenInner() {
   };
 
   const handleStop = () => {
-    streamRef.current?.abort();
-    // Also cancel queue task if active
-    if (activeTaskRef.current) {
-      chatQueueApi.cancel(activeTaskRef.current.taskId).catch(e => console.warn('[ChatQueue] Cancel failed:', e));
-      clearTask();
-    }
-    clearStreaming();
+    // [QM] 取消全局队列任务（服务端任务一并取消）
+    queueManager.cancelForConv((conversationId || id || '') as string);
   };
-
-  // Start polling for a specific video task
-  const startVideoPolling = (taskId: string, initialMsgId: string) => {
-    if (videoPollingRef.current.has(taskId)) return; // Already polling
-
-    setVideoTasks(prev => {
-      const next = new Map(prev);
-      const existing = next.get(taskId);
-      next.set(taskId, { taskId, status: 'polling', progress: existing?.progress || 0, msgId: existing?.msgId || initialMsgId, url: existing?.url });
-      return next;
-    });
-
-    // Poll every 10 seconds
-    const poll = async () => {
-      try {
-        const baseUrl = 'https://s.symsgf.xyz';
-        const resp = await fetch(`${baseUrl}/video/status/${taskId}`);
-        const data = await resp.json();
-        const parsed = typeof data.data === 'string' ? JSON.parse(data.data || '{}') : (data.data || data);
-        const status = parsed.status || 'unknown';
-        const videoUrl = parsed.video_url || '';
-        const progress = typeof parsed.progress === 'number' ? parsed.progress : (parseInt(String(parsed.progress)) || 0);
-        
-        console.log('[Video Poll]', taskId, 'status:', status, 'progress:', progress, 'url:', videoUrl ? 'yes' : 'no');
-
-        setVideoTasks(prev => {
-          const next = new Map(prev);
-          const existing = next.get(taskId);
-          next.set(taskId, { taskId, status, url: videoUrl, progress, msgId: existing?.msgId || initialMsgId });
-          return next;
-        });
-
-        if (status === 'completed' && videoUrl) {
-          const interval = videoPollingRef.current.get(taskId);
-          if (interval) { clearInterval(interval); videoPollingRef.current.delete(taskId); }
-        } else if (status === 'failed') {
-          const interval = videoPollingRef.current.get(taskId);
-          if (interval) { clearInterval(interval); videoPollingRef.current.delete(taskId); }
-        }
-      } catch (e) {
-        console.warn('[Video Poll] Failed:', e);
-      }
-    };
-
-    poll();
-    const interval = setInterval(poll, 10000);
-    videoPollingRef.current.set(taskId, interval);
-
-    // Auto-stop after 5 minutes
-    setTimeout(() => {
-      const iv = videoPollingRef.current.get(taskId);
-      if (iv) {
-        clearInterval(iv);
-        videoPollingRef.current.delete(taskId);
-        setVideoTasks(prev => {
-          const next = new Map(prev);
-          const existing = next.get(taskId);
-          if (existing && existing.status !== 'completed') {
-            next.set(taskId, { ...existing, status: 'timeout' });
-          }
-          return next;
-        });
-      }
-    }, 300000);
-  };
-
-  // Detect video task_id in AI message and start polling
-  const detectAndPollVideoTasks = async (aiContent: string, aiMsgId: string) => {
-    // Look for task_id patterns in the response
-    const taskIdPatterns = [
-      /task_id["\s:]+["']?(task_[A-Za-z0-9]+)["']?/gi,
-      /task_(?:id)?["\s:=]+["']?(task_[A-Za-z0-9_]+)["']?/gi,
-      /任务ID[：:\s]+\s*(task_[A-Za-z0-9_]+)/gi,
-      /\b(task_[A-Za-z0-9]{20,})\b/gi,
-    ];
-    const taskIds = new Set<string>();
-    for (const pattern of taskIdPatterns) {
-      let match;
-      while ((match = pattern.exec(aiContent)) !== null) {
-        taskIds.add(match[1]);
-      }
-    }
-    
-    for (const taskId of taskIds) {
-      startVideoPolling(taskId, aiMsgId);
-    }
-  };
-
-
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      videoPollingRef.current.forEach((interval) => clearInterval(interval));
-      videoPollingRef.current.clear();
-    };
-  }, []);
 
   // Fetch available bots
   const fetchBots = async () => {
@@ -1702,6 +1359,7 @@ function ChatDetailScreenInner() {
     // Create a new conversation with the new bot
     try {
       const userId = user?.id || '';
+      if (!userId) { try { router.replace('/login'); } catch (e) {} return; }
       const conv = await chatApi.createConversation(newBotId, '', userId);
       if (conv?.id) {
         setConversationId(conv.id);
@@ -1793,33 +1451,29 @@ function ChatDetailScreenInner() {
     );
   };
 
+  // [FIX2 抖动] 稳定 key：优先真实 id；临时 msg_<ts> 在被服务端 id 替换前，用 role+时间桶+内容指纹兜底，
+  // 保证“同一条消息”在后台轮询合并/重排前后 key 不变，FlatList 不会 remount 行而跳位。
+  const stableMsgKey = (m: any, index: number): string => {
+    if (m && m.id && !/^msg_\d+$/.test(String(m.id))) return String(m.id);
+    if (m) {
+      const bucket = Math.floor(Number(m.created_at) / (m.role === 'user' ? 5000 : 3000));
+      const sig = (m.role || '') + '|' + bucket + '|' + String(m.content || '').trim().slice(0, 24);
+      return 'k_' + sig;
+    }
+    return 'idx_' + index;
+  };
+
   const renderFooter = () => {
     if (!isStreaming) return null;
 
     // 实时任务状态卡片：思考理解 → 正在生成图片/视频/搜索… → 正在输入回复
     // 紧跟最后一条消息展示，随后端工具事件实时切换阶段 + 计时
-    const toolSteps = toolCalls.map((tc) => ({
-      id: tc.id,
-      name: tc.name,
-      label: getToolMeta(tc.name).label,
-      done: !!tc.result,
-    }));
-
-    const showStatusCard = !streamingContent;
     const sanitizedStreaming = /task_id|任务ID|进度[：:\s]*\d+%|视频已生成完成|视频正在生成中|正在尝试生成视频|视频生成服务暂时不可用|关于视频链接|替代方案|状态[：:]\s*(queued|processing)/i.test(streamingContent)
       ? sanitizeVideoContent(streamingContent)
       : streamingContent;
 
     return (
       <View>
-        {showStatusCard && (
-          <TaskStatusCard
-            status={activityStatus}
-            tools={toolSteps}
-            botName={botName}
-            isDark={isDark}
-          />
-        )}
         {streamingContent ? (
           <View style={{ paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm }}>
             <MessageBubble
@@ -1888,9 +1542,9 @@ function ChatDetailScreenInner() {
         <FlatList
           style={{ flex: 1 }}
           ref={flatListRef}
-          data={(searchQuery ? messages.filter((m: any) => m && (m.content || "").toLowerCase().includes(searchQuery.toLowerCase())) : messages).filter((m: any) => m && m.id)}
+          data={visibleMessages}
           renderItem={renderItem}
-          keyExtractor={(item, index) => item?.id || `msg_${index}`}
+          keyExtractor={stableMsgKey}
           contentContainerStyle={styles.listContent}
           ListFooterComponent={renderFooter}
           ListHeaderComponent={loadingMore ? (
@@ -1910,19 +1564,40 @@ function ChatDetailScreenInner() {
           extraData={videoTasks}
           onScroll={handleScroll}
           onContentSizeChange={() => {
-            if (isNearBottomRef.current) {
-              flatListRef.current?.scrollToEnd({ animated: false });
-            }
+            // [FIX2 抖动] 流式打字内容长高时【不主动滚】——footer 在底部自然撑高，
+            // 反复 scrollToEnd 会和滚动位打架产生上下抖。跟随态的贴底由 messages 变化/进入流式时的 requestFollow 负责。
           }}
           onLayout={() => {
-            if (isNearBottomRef.current) {
-              flatListRef.current?.scrollToEnd({ animated: false });
+            // [FIX2 抖动] 仅首屏还没定位过时滚一次底；之后键盘弹起/旋转/布局变化一律不碰滚动位置。
+            if (!didInitialScrollRef.current) {
+              didInitialScrollRef.current = true;
+              requestFollow({ force: true });
             }
           }}
           onScrollBeginDrag={() => {
-            // User started scrolling manually - don't force scroll until they go back to bottom
+            // 用户手指开始拖拽：立即锁定跟随，且粘滞保持
+            markUserScrolling();
           }}
-          scrollEventThrottle={Platform.OS === 'web' ? 0 : 100}
+          onScrollEndDrag={() => {
+            // 松手后给惯性留短缓冲；缓冲结束时若仍在上方则继续锁定（位置判定，不自动解锁）
+            markUserScrolling(250);
+          }}
+          onMomentumScrollBegin={() => {
+            markUserScrolling();
+          }}
+          onMomentumScrollEnd={() => {
+            // 惯性结束：由 handleScroll 据当前位置决定；不在底部就继续锁
+            markUserScrolling(120);
+          }}
+          {...(Platform.OS === 'web' ? {
+            onWheel: (e: any) => {
+              // Web 端滚轮上滚（deltaY<0）即视为用户主动上翻：粘滞锁定，直到他自己滚回底部
+              if (e && e.nativeEvent && typeof e.nativeEvent.deltaY === 'number' && e.nativeEvent.deltaY < -1) {
+                markUserScrolling();
+              }
+            },
+          } : {})}
+          scrollEventThrottle={Platform.OS === 'web' ? 16 : 100}
         />
       )}
 
@@ -1962,20 +1637,22 @@ function ChatDetailScreenInner() {
 
       {/* Dynamic typing indicator + input with keyboard avoidance */}
       <View style={{ marginBottom: keyboardHeight + (Platform.OS === 'ios' ? insets.bottom : 0) }}>
-        <TypingIndicator
-          statusText={activityStatus}
-          visible={isStreaming}
-          botName={botName}
-          currentTool={
-            // If AI is outputting text, hide tool badge so statusText ("正在输入回复…") shows
-            streamingContent
-              ? null
-              : // No text yet: show latest tool call (running or just completed)
-                toolCalls.length > 0
-                ? toolCalls[toolCalls.length - 1]
-                : null
-          }
-        />
+        {(conversationId || id) ? (
+          <DagProgressCard conversationId={(conversationId || id || '') as string} isDark={isDark} />
+        ) : null}
+        {isStreaming && (!streamingContent || toolCalls.some((tc) => !tc.result)) ? (
+          <TaskStatusCard
+            status={activityStatus}
+            tools={toolCalls.map((tc) => ({
+              id: tc.id,
+              name: tc.name,
+              label: getToolMeta(tc.name).label,
+              done: !!tc.result,
+            }))}
+            botName={botName}
+            isDark={isDark}
+          />
+        ) : null}
         <ChatInput
         onSend={handleSend}
         onStop={handleStop}

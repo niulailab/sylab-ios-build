@@ -94,6 +94,6 @@ export const API_PATHS = {
   VERIFICATION_SEND_CODE: '/token-api/api/verification/send-code',
   VERIFICATION_VERIFY: '/token-api/api/verification/verify',
   CONVERSATION_DELETE: (id: string) => `/v1/conversations/${id}`,
-  RESET_PASSWORD: '/api/passport/web/email/reset_password/',
+  RESET_PASSWORD: '/token-api/api/auth/reset-password',
 
 } as const;

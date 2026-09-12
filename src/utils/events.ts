@@ -14,4 +14,6 @@ export function emit(event: string) {
 
 export const AppEvents = {
   CONVERSATIONS_CHANGED: 'conversations_changed',
+  CHAT_TASK_UPDATED: 'chat_task_updated',
+  CHAT_VIDEO_UPDATED: 'chat_video_updated',
 };

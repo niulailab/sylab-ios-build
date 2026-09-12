@@ -39,6 +39,24 @@ export function getToolMeta(toolName: string): { label: string; icon: string; co
   const isVideoGen = !isVideoStatus &&
     (n.includes('generate_video') || n.includes('text2video') || n.includes('txt2vid') || n.includes('animate') || n.includes('sora') || n.includes('gen_video') || n.includes('video_generate'));
 
+  if (n.includes('ui_build')) return { label: '构建发布', icon: 'cube-outline', color: '#10b981' };
+  if (n.includes('ui_status')) return { label: '查询构建进度', icon: 'time-outline', color: '#10b981' };
+  if (n.includes('run_command')) return { label: '运行代码', icon: 'terminal-outline', color: '#10b981' };
+  if (n.includes('script_execute')) return { label: '执行脚本', icon: 'code-slash', color: '#10b981' };
+  if (n.includes('file_list') || n.includes('list_files')) return { label: '浏览文件', icon: 'folder-open-outline', color: '#64748b' };
+  if (n.includes('upload_file')) return { label: '上传文件', icon: 'cloud-upload-outline', color: '#64748b' };
+  if (n.includes('search_papers')) return { label: '搜索论文', icon: 'book-outline', color: '#3b82f6' };
+  if (n.includes('synthesize_speech')) return { label: '合成语音', icon: 'mic-outline', color: '#8b5cf6' };
+  if (n.includes('nikto_scan') || n.includes('nmap_scan')) return { label: '安全扫描', icon: 'shield-checkmark-outline', color: '#ef4444' };
+  if (n.includes('monitor_requests')) return { label: '监听网络请求', icon: 'radio-outline', color: '#f59e0b' };
+  if (n.includes('get_weather')) return { label: '查询天气', icon: 'partly-sunny-outline', color: '#3b82f6' };
+  if (n.includes('get_task_stats')) return { label: '查询任务状态', icon: 'stats-chart-outline', color: '#64748b' };
+  if (n.includes('github_build')) return { label: 'GitHub构建', icon: 'logo-github', color: '#64748b' };
+  if (n.includes('save_memory')) return { label: '保存记忆', icon: 'save-outline', color: '#8b5cf6' };
+  if (n.includes('create_scheduled_task')) return { label: '设定定时任务', icon: 'alarm-outline', color: '#f59e0b' };
+  if (n.includes('list_scheduled_tasks')) return { label: '查看定时任务', icon: 'list-outline', color: '#0ea5e9' };
+  if (n.includes('delete_scheduled_task')) return { label: '删除定时任务', icon: 'trash-outline', color: '#ef4444' };
+  if (n.includes('get_memories') || n.includes('search_memory')) return { label: '检索记忆', icon: 'brain-outline', color: '#8b5cf6' };
   if (isImgGen) return { label: '生成图片', icon: 'image', color: '#f59e0b' };
   if (isVideoGen) return { label: '生成视频', icon: 'videocam', color: '#ef4444' };
   if (isVideoStatus) return { label: '查询视频进度', icon: 'time-outline', color: '#ef4444' };

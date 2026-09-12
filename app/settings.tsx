@@ -4,10 +4,11 @@ import { SafeAlert } from "../src/utils/safeAlert";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../src/constants/theme';
 import { useTheme } from '../src/hooks/useTheme';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.9.22';
 
 const THEME_COLORS = [
   { name: '星空紫', value: '#6030ff' },
@@ -19,6 +20,7 @@ const THEME_COLORS = [
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { isDark, toggleDark, Colors: C } = useTheme();
   const [showAbout, setShowAbout] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
@@ -99,7 +101,7 @@ export default function SettingsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: isDark ? '#0f172a' : Colors.backgroundSecondary }]}>
-      <View style={[styles.header, { backgroundColor: bgColor, borderBottomColor: borderColor }]}>
+      <View style={[styles.header, { backgroundColor: bgColor, borderBottomColor: borderColor, paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color={isDark ? '#f1f5f9' : Colors.text} />
         </TouchableOpacity>
@@ -171,25 +173,6 @@ export default function SettingsScreen() {
             </View>
             <Ionicons name="chevron-forward" size={14} color={Colors.textTertiary} />
           </TouchableOpacity>
-        </View>
-
-        <View style={[styles.section, { backgroundColor: cardBg }]}>
-          <Text style={styles.sectionTitle}>通知</Text>
-          <View style={styles.row}>
-            <View style={styles.rowLeft}>
-              <Ionicons name="notifications-outline" size={20} color={Colors.textSecondary} />
-              <Text style={[styles.rowLabel, { color: isDark ? '#f1f5f9' : Colors.text }]}>消息通知</Text>
-            </View>
-            <TouchableOpacity onPress={() => {
-              const next = !notificationsEnabled;
-              setNotificationsEnabled(next);
-              AsyncStorage.setItem('app_notifications', String(next));
-            }} activeOpacity={0.6}>
-              <View style={[styles.toggleTrack, notificationsEnabled && styles.toggleTrackActive]}>
-                <View style={[styles.toggleThumb, notificationsEnabled && styles.toggleThumbActive]} />
-              </View>
-            </TouchableOpacity>
-          </View>
         </View>
 
         <View style={[styles.section, { backgroundColor: cardBg }]}>
