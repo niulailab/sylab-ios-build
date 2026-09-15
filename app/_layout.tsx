@@ -1,21 +1,57 @@
 import React, { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity, Alert } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity, Alert, ScrollView } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore } from '../src/store/auth';
 import { queueManager } from '../src/queue/queueTaskManager';
 import { Colors } from '../src/constants/theme';
 
-// === NETWORK DIAGNOSTIC (v108.6) ===
-setTimeout(async () => {
+// === NETWORK DIAGNOSTIC (v108.7) ===
+let _diagShown = false;
+async function runDiag(): Promise<string[]> {
   const r: string[] = [];
-  try { const e = await fetch("https://www.apple.com/", {method:"HEAD"}); r.push("apple:"+e.status); } catch(e:any){ r.push("apple:ERR "+e.message); }
-  try { const e = await fetch("https://s.symsgf.xyz/", {method:"HEAD"}); r.push("web:"+e.status); } catch(e:any){ r.push("web:ERR "+e.message); }
-  try { const e = await fetch("https://s.symsgf.xyz/v1/conversations",{headers:{Authorization:"Bearer pat_f360e4508904a857bf1466629c9ecc4f53abd2c4cb6572fa76667fceefb24de4"}}); r.push("api:"+e.status); } catch(e:any){ r.push("api:ERR "+e.message); }
-  Alert.alert("NetDiag", r.join(" | "));
-}, 2000);
+  // 1. Apple (baseline)
+  try { const e = await fetch("https://www.apple.com/", {method:"HEAD"}); r.push("1.apple:OK "+e.status); } catch(e:any){ r.push("1.apple:FAIL "+e.message); }
+  // 2. s.symsgf.xyz via domain
+  try { const e = await fetch("https://s.symsgf.xyz/", {method:"HEAD"}); r.push("2.domain:OK "+e.status); } catch(e:any){ r.push("2.domain:FAIL "+e.message); }
+  // 3. Direct IP with Host header (bypass DNS)
+  try {
+    const e = await fetch("https://104.21.26.237/", {
+      method:"HEAD",
+      headers: { Host: "s.symsgf.xyz" }
+    });
+    r.push("3.ip-direct:OK "+e.status);
+  } catch(e:any){ r.push("3.ip-direct:FAIL "+e.message); }
+  // 4. Second Cloudflare IP
+  try {
+    const e = await fetch("https://172.67.168.153/", {
+      method:"HEAD",
+      headers: { Host: "s.symsgf.xyz" }
+    });
+    r.push("4.ip2:OK "+e.status);
+  } catch(e:any){ r.push("4.ip2:FAIL "+e.message); }
+  // 5. Another Cloudflare-served domain
+  try { const e = await fetch("https://www.cloudflare.com/", {method:"HEAD"}); r.push("5.cflare:OK "+e.status); } catch(e:any){ r.push("5.cflare:FAIL "+e.message); }
+  // 6. Full error detail for s.symsgf.xyz
+  try {
+    await fetch("https://s.symsgf.xyz/v1/conversations", {
+      headers: { Authorization: "Bearer pat_f360e4508904a857bf1466629c9ecc4f53abd2c4cb6572fa76667fceefb24de4" }
+    });
+    r.push("6.api:OK");
+  } catch(e:any) {
+    r.push("6.api:FAIL name="+e.name+" msg="+e.message);
+  }
+  return r;
+}
+
+setTimeout(async () => {
+  if (_diagShown) return;
+  _diagShown = true;
+  const results = await runDiag();
+  Alert.alert("NetDiag v108.7", results.join("\n"), [{text:"OK"}]);
+}, 2500);
 // === END DIAGNOSTIC ===
 
 class RootErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean; error: string}> {
@@ -111,13 +147,7 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const restore = useAuthStore((s) => s.restore);
-  
-
-  useEffect(() => {
-    restore();
-    queueManager.init();
-  }, []);
-
+  useEffect(() => { restore(); queueManager.init(); }, []);
   return <RootErrorBoundary><RootLayoutNav /></RootErrorBoundary>;
 }
 
