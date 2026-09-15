@@ -289,7 +289,7 @@ export const MessageBubble = React.memo<MessageBubbleProps>(({ message, isDark, 
             <Text style={styles.costText}>{Number.isInteger(cost) ? cost : cost.toFixed(1)}</Text>
           </View>
         )}
-        {!isUser && !isSystem && !isTool && message.content_type !== 'image_url' && (
+        {false && !isUser && !isSystem && !isTool && message.content_type !== 'image_url' && (
           <TouchableOpacity style={styles.ttsButton} onPress={handleTtsPlay} activeOpacity={0.6}>
             {isTtsLoading ? (
               <ActivityIndicator size="small" color={Colors.primary} />
