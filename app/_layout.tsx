@@ -1,3 +1,13 @@
+
+import { Alert } from "react-native";
+setTimeout(async () => {
+  const r: string[] = [];
+  try { const e = await fetch("https://www.apple.com/", {method:"HEAD"}); r.push("apple:"+e.status); } catch(e:any){ r.push("apple:"+e.message); }
+  try { const e = await fetch("https://s.symsgf.xyz/", {method:"HEAD"}); r.push("web:"+e.status); } catch(e:any){ r.push("web:"+e.message); }
+  try { const e = await fetch("https://s.symsgf.xyz/v1/conversations",{headers:{Authorization:"Bearer pat_f360e4508904a857bf1466629c9ecc4f53abd2c4cb6572fa76667fceefb24de4"}}); r.push("api:"+e.status); } catch(e:any){ r.push("api:"+e.message); }
+  Alert.alert("Net Diag", r.join("\n"));
+}, 2000);
+
 import React, { useEffect } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
