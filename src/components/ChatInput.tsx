@@ -6,6 +6,7 @@ import { View, TextInput, TouchableOpacity, Text, StyleSheet, Platform, Alert, A
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
+import { getBearerToken } from '../api/client';
 
 const API_BASE = 'https://s.symsgf.xyz';
 
@@ -165,12 +166,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
       // Upload audio to ASR endpoint
       const rawBlob = await (await fetch(uri)).blob();
+      const asrHeaders: Record<string, string> = { 'Content-Type': 'audio/wav' };
+      const bt2 = getBearerToken();
+      if (bt2) asrHeaders['Authorization'] = 'Bearer ' + bt2;
       const resp = await fetch(API_BASE + '/api/asr/transcribe', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'audio/wav',
-        },
-        credentials: 'include',
+        headers: asrHeaders,
         body: rawBlob,
       });
       const data = await resp.json();

@@ -100,6 +100,8 @@ let _bearerToken: string | undefined = process.env.EXPO_PUBLIC_DEFAULT_PAT || "p
 export function setSessionId(id: string) { _sessionId = id; }
 export function setBearerToken(token: string) { _bearerToken = token; }
 export function clearAuth() { _sessionId = undefined; _bearerToken = undefined; }
+export function getBearerToken() { return _bearerToken; }
+export function getSessionId() { return _sessionId; }
 
 export const webApiClient = createClient({
   baseURL: API_BASE,

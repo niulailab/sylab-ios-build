@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Platform, ActivityIndicator, Alert } from 'react-native';
 import { Audio } from 'expo-av';
+import { getBearerToken } from '../api/client';
 
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -178,10 +179,12 @@ export const MessageBubble = React.memo<MessageBubbleProps>(({ message, isDark, 
     try {
       setIsTtsLoading(true);
       const plainText = stripMd(message.content);
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const bt = getBearerToken();
+      if (bt) headers['Authorization'] = 'Bearer ' + bt;
       const resp = await fetch(API_BASE + '/api/tts/synthesize', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
+        headers,
         body: JSON.stringify({ text: plainText, voice: 'tongtong' }),
       });
       const data = await resp.json();
@@ -209,10 +212,11 @@ export const MessageBubble = React.memo<MessageBubbleProps>(({ message, isDark, 
         });
         await sound.playAsync();
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('[MessageBubble] TTS error:', e);
       setIsTtsLoading(false);
       setIsPlaying(false);
+      Alert.alert('朗读失败', e?.message || '未知错误');
     }
   };
 
