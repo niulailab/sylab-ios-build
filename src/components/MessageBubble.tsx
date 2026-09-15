@@ -1,5 +1,6 @@
-import React from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Platform } from 'react-native';
+import React, { useState, useRef } from 'react';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Platform, ActivityIndicator } from 'react-native';
+import { Audio } from 'expo-av';
 
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -7,6 +8,8 @@ import { ZoomableImage } from './ImageLightbox';
 import { Ionicons } from '@expo/vector-icons';
 import type { ChatMessage, ToolCall } from '../types/api';
 
+
+const API_BASE = 'https://s.symsgf.xyz';
 
 // Convert HTTP server URLs to HTTPS tunnel for iOS ATS
 function normalizeImageUrl(url: string): string {
@@ -160,6 +163,58 @@ export const MessageBubble = React.memo<MessageBubbleProps>(({ message, isDark, 
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const isTool = message.role === 'tool';
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isTtsLoading, setIsTtsLoading] = useState(false);
+  const soundRef = useRef<Audio.Sound | null>(null);
+
+  const handleTtsPlay = async () => {
+    if (isPlaying && soundRef.current) {
+      await soundRef.current.stopAsync();
+      await soundRef.current.unloadAsync();
+      soundRef.current = null;
+      setIsPlaying(false);
+      return;
+    }
+    try {
+      setIsTtsLoading(true);
+      const plainText = stripMd(message.content);
+      const resp = await fetch(API_BASE + '/api/tts/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ text: plainText, voice: 'tongtong' }),
+      });
+      const data = await resp.json();
+      setIsTtsLoading(false);
+      if (data.code === 0 && data.data && data.data.audio) {
+        // Convert hex to base64 for playback
+        const hex = data.data.audio;
+        const bytes = [];
+        for (let i = 0; i < hex.length; i += 2) {
+          bytes.push(parseInt(hex.substr(i, 2), 16));
+        }
+        const binary = bytes.reduce((s, b) => s + String.fromCharCode(b), '');
+        const b64 = btoa(binary);
+        const sound = new Audio.Sound();
+        await sound.loadAsync({
+          uri: 'data:audio/wav;base64,' + b64,
+        });
+        soundRef.current = sound;
+        setIsPlaying(true);
+        sound.setOnPlaybackStatusUpdate((status: any) => {
+          if (status.isLoaded && status.didJustFinish) {
+            setIsPlaying(false);
+            soundRef.current = null;
+          }
+        });
+        await sound.playAsync();
+      }
+    } catch (e) {
+      console.error('[MessageBubble] TTS error:', e);
+      setIsTtsLoading(false);
+      setIsPlaying(false);
+    }
+  };
 
   if (isSystem) {
     return (
@@ -230,6 +285,16 @@ export const MessageBubble = React.memo<MessageBubbleProps>(({ message, isDark, 
             <Text style={styles.costText}>{Number.isInteger(cost) ? cost : cost.toFixed(1)}</Text>
           </View>
         )}
+        {!isUser && !isSystem && !isTool && message.content_type !== 'image_url' && (
+          <TouchableOpacity style={styles.ttsButton} onPress={handleTtsPlay} activeOpacity={0.6}>
+            {isTtsLoading ? (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            ) : (
+              <Ionicons name={isPlaying ? "pause-circle" : "play-circle"} size={22} color={Colors.primary} />
+            )}
+            <Text style={styles.ttsLabel}>{isTtsLoading ? '\u8f6c\u6362\u4e2d...' : isPlaying ? '\u6682\u505c' : '\u6717\u8bfb'}</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -268,4 +333,19 @@ const styles = StyleSheet.create({
   toolResultText: { fontSize: FontSize.sm },
   costContainer: { flexDirection: 'row', alignItems: 'center', paddingTop: 4, alignSelf: 'flex-end', gap: 2, opacity: 0.7 },
   costText: { fontSize: 11, color: Colors.textTertiary },
+  ttsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  ttsLabel: {
+    fontSize: 12,
+    color: Colors.primary,
+    fontWeight: '500',
+  },
 });

@@ -5,6 +5,9 @@ import * as FileSystem from 'expo-file-system';
 import { View, TextInput, TouchableOpacity, Text, StyleSheet, Platform, Alert, ActivityIndicator, Modal, FlatList, Image } from 'react-native';
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { Audio } from 'expo-av';
+
+const API_BASE = 'https://s.symsgf.xyz';
 
 // Module-level storage for pending file blobs when no conversationId exists yet
 let _pendingFileBlobs: Array<{blob: Blob, name: string, type: string}> = [];
@@ -102,6 +105,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const inputRef = useRef<TextInput>(null);
   const isSendingRef = useRef(false);
   const [inputHeight, setInputHeight] = useState(Platform.OS === 'web' ? 40 : 24);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -114,6 +121,78 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setInputHeight(newHeight);
     el.style.height = newHeight + 'px';
   }, [text]);
+
+
+  // ========== Voice Recording Functions ==========
+  const startRecording = async () => {
+    try {
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('\u9700\u8981\u6743\u9650', '\u8bf7\u5728\u8bbe\u7f6e\u4e2d\u5141\u8bb8\u8bbf\u95ee\u9ea6\u514b\u98ce');
+        return;
+      }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInNitroIOS: true,
+      });
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      recordingRef.current = recording;
+      setIsRecording(true);
+      setRecordingDuration(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+    } catch (e) {
+      console.error('[ChatInput] Start recording error:', e);
+    }
+  };
+
+  const stopRecording = async () => {
+    if (!recordingRef.current) return;
+    try {
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      setIsRecording(false);
+      await recordingRef.current.stopAndUnloadAsync();
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+      const uri = recordingRef.current.getURI();
+      recordingRef.current = null;
+      if (!uri) return;
+
+      // Upload audio to ASR endpoint
+      const rawBlob = await (await fetch(uri)).blob();
+      const resp = await fetch(API_BASE + '/api/asr/transcribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'audio/wav',
+        },
+        credentials: 'include',
+        body: rawBlob,
+      });
+      const data = await resp.json();
+      if (data.code === 0 && data.data && data.data.text) {
+        setText(prev => prev + (prev ? ' ' : '') + data.data.text);
+      } else {
+        console.warn('[ChatInput] ASR result:', data);
+        if (data.code !== 0) {
+          Alert.alert('\u8bed\u97f3\u8bc6\u522b\u5931\u8d25', data.msg || '\u8bf7\u91cd\u8bd5');
+        }
+      }
+    } catch (e) {
+      console.error('[ChatInput] Stop recording error:', e);
+      Alert.alert('\u5f55\u97f3\u5931\u8d25', '\u8bf7\u7a0d\u540e\u91cd\u8bd5');
+    }
+  };
+
+  const formatRecordingDuration = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return m + ':' + s;
+  };
 
   const handleSend = () => {
     if (isSendingRef.current) return;
@@ -533,6 +612,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           }}
         />
 
+        {isRecording && (
+          <View style={styles.recordingIndicator}>
+            <View style={styles.recordingDot} />
+            <Text style={styles.recordingTime}>{formatRecordingDuration(recordingDuration)}</Text>
+          </View>
+        )}
+        <TouchableOpacity
+          style={[styles.micBtn, isRecording ? styles.micBtnActive : {}]}
+          onPressIn={startRecording}
+          onPressOut={stopRecording}
+          activeOpacity={0.7}
+          disabled={isStreaming}
+        >
+          <Ionicons name={isRecording ? "radio" : "mic"} size={20} color={isRecording ? '#fff' : Colors.primary} />
+        </TouchableOpacity>
         {isStreaming && (
           <TouchableOpacity style={styles.stopBtn} onPress={onStop} activeOpacity={0.7}>
             <Ionicons name="stop" size={18} color={Colors.danger} />
@@ -672,5 +766,26 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.text,
     fontWeight: '500',
+  },
+  micBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    justifyContent: 'center', alignItems: 'center',
+    marginLeft: 4,
+    backgroundColor: Colors.primary + '12',
+  },
+  micBtnActive: {
+    backgroundColor: Colors.danger,
+    transform: [{ scale: 1.1 }],
+  },
+  recordingIndicator: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8,
+  },
+  recordingDot: {
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: Colors.danger,
+  },
+  recordingTime: {
+    fontSize: 13, color: Colors.danger, fontWeight: '600',
   },
 });
