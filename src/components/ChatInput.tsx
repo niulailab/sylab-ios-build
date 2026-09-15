@@ -395,9 +395,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         if (url) return url;
       }
       // Last resort: multipart/form-data (server also accepts it).
+      // CRITICAL: web FormData.append must receive a real Blob/File — appending a
+      // plain {uri,name,type} object stringifies to "[object Object]" and stores
+      // garbage as the file. Only native React Native accepts the {uri} object form.
       const fd = new FormData();
       const cleanName = decodeURIComponent(xFileName);
-      fd.append('file', { uri: file.uri, name: cleanName, type: file.type || 'application/octet-stream' } as any);
+      if (Platform.OS === 'web') {
+        if (!blob) throw new Error('no file data for multipart');
+        fd.append('file', blob as any, cleanName);
+      } else {
+        fd.append('file', { uri: file.uri, name: cleanName, type: file.type || 'application/octet-stream' } as any);
+      }
       const resp2 = await fetch(UPLOAD_URL, { method: 'POST', body: fd as any, headers: { 'X-File-Name': xFileName } });
       if (resp2.ok) {
         const url = parseBody(await resp2.text());
