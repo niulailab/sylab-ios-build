@@ -136,17 +136,25 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         allowsRecordingIOS: true,
         playsInNitroIOS: true,
       });
-      const { recording } = await Audio.Recording.createAsync(
+      const { recording, status } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
+      // iOS requires prepareToRecordAsync after createAsync to actually start capturing
+      await recording.prepareToRecordAsync();
+      // Verify recording is actually recording
+      if (!status.isRecording && !status.isDoneRecording) {
+        console.warn('[ChatInput] Recording created but not in recording state, retrying...');
+        await new Promise(r => setTimeout(r, 100));
+      }
       recordingRef.current = recording;
       setIsRecording(true);
       setRecordingDuration(0);
       recordingTimerRef.current = setInterval(() => {
         setRecordingDuration(prev => prev + 1);
       }, 1000);
-    } catch (e) {
-      console.error('[ChatInput] Start recording error:', e);
+    } catch (e: any) {
+      console.error('[ChatInput] Start recording error:', e?.message || e, e?.code);
+      Alert.alert('录音启动失败', e?.message || '请检查麦克风权限或重试');
     }
   };
 

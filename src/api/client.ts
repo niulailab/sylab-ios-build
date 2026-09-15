@@ -95,10 +95,7 @@ function createClient(options: ClientOptions): AxiosInstance {
         if (e.config?.url) parts.push(`url=${e.config.url}`);
         console.error(`[NET_DEBUG] ${parts.join(" | ")}`);
         // Show alert with debug info on network error
-        try {
-          const { Alert } = require("react-native");
-          Alert.alert("网络调试", parts.join("\n"));
-        } catch (_) {}
+        // v111: removed debug alert, keep console.error only
       }
       if (error.response?.status === 401) {
         // 401 未授权，抛出特殊错误让上层处理踢下线
