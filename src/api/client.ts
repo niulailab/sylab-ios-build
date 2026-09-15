@@ -80,6 +80,26 @@ function createClient(options: ClientOptions): AxiosInstance {
       if (ENABLE_LOG) {
         console.error(`[API Error] ${error.response?.status} ${error.config?.url}`, error.message);
       }
+      // Debug: capture detailed network error info
+      if (!error.response) {
+        const e = error as any;
+        const parts: string[] = [];
+        parts.push(`msg=${e.message}`);
+        parts.push(`code=${e.code}`);
+        if (e.errno) parts.push(`errno=${e.errno}`);
+        if (e.syscall) parts.push(`syscall=${e.syscall}`);
+        if (e.hostname) parts.push(`hostname=${e.hostname}`);
+        if (e.host) parts.push(`host=${e.host}`);
+        if (e.port) parts.push(`port=${e.port}`);
+        if (e.config?.baseURL) parts.push(`base=${e.config.baseURL}`);
+        if (e.config?.url) parts.push(`url=${e.config.url}`);
+        console.error(`[NET_DEBUG] ${parts.join(" | ")}`);
+        // Show alert with debug info on network error
+        try {
+          const { Alert } = require("react-native");
+          Alert.alert("网络调试", parts.join("\n"));
+        } catch (_) {}
+      }
       if (error.response?.status === 401) {
         // 401 未授权，抛出特殊错误让上层处理踢下线
         const authError = new Error('UNAUTHORIZED') as any;
