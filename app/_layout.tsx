@@ -115,3 +115,52 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   loading: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },
 });
+\n
+// === NETWORK DIAGNOSTIC ===
+import { Alert } from "react-native";
+
+async function runNetDiagnostic() {
+  const results: string[] = [];
+  
+  // Test 1: Can we reach apple.com?
+  try {
+    const r1 = await fetch("https://www.apple.com/", { method: "HEAD" });
+    results.push(`apple.com: OK ${r1.status}`);
+  } catch (e: any) {
+    results.push(`apple.com: FAIL ${e.message}`);
+  }
+  
+  // Test 2: Can we reach s.symsgf.xyz root (web page)?
+  try {
+    const r2 = await fetch("https://s.symsgf.xyz/", { method: "HEAD" });
+    results.push(`s.symsgf.xyz/: OK ${r2.status}`);
+  } catch (e: any) {
+    results.push(`s.symsgf.xyz/: FAIL ${e.message}`);
+  }
+  
+  // Test 3: Can we reach the API?
+  try {
+    const r3 = await fetch("https://s.symsgf.xyz/v1/conversations", {
+      headers: { "Authorization": "Bearer pat_f360e4508904a857bf1466629c9ecc4f53abd2c4cb6572fa76667fceefb24de4" }
+    });
+    results.push(`API: OK ${r3.status}`);
+  } catch (e: any) {
+    results.push(`API: FAIL ${e.message}`);
+  }
+  
+  // Test 4: Try Cloudflare trace
+  try {
+    const r4 = await fetch("https://s.symsgf.xyz/cdn-cgi/trace");
+    const text = await r4.text();
+    const lines = text.split("\n").filter((l: string) => l.startsWith("ip=") || l.startsWith("tls=") || l.startsWith("http="));
+    results.push(`CF-trace: ${lines.join(" ")}`);
+  } catch (e: any) {
+    results.push(`CF-trace: FAIL ${e.message}`);
+  }
+  
+  Alert.alert("网络诊断", results.join("\n"), [{ text: "OK" }]);
+}
+
+setTimeout(() => { runNetDiagnostic(); }, 2000);
+// === END DIAGNOSTIC ===
+
