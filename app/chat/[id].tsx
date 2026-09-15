@@ -1448,7 +1448,7 @@ function ChatDetailScreenInner() {
     const activeTask = hasActiveVideoTask ? Array.from(videoTasks.values()).find(t => t.msgId === item.id) : null;
     
     // Sanitize message content if it contains video task technical info
-    const hasVideoTechInfo = item.role === 'assistant' && /task_id|task_[A-Za-z0-9]+|\u4efb\u52a1ID|\u8fdb\u5ea6[\s\uff1a:]*\d+%|\u89c6\u9891\u5df2\u751f\u6210\u5b8c\u6210|\u89c6\u9891\u6b63\u5728\u751f\u6210\u4e2d|\u6b63\u5728\u5c1d\u8bd5\u751f\u6210\u89c6\u9891|\u89c6\u9891\u751f\u6210\u670d\u52a1\u6682\u65f6\u4e0d\u53ef\u7528|\u5173\u4e8e\u89c6\u9891\u94fe\u63a5|\u66ff\u4ee3\u65b9\u6848/i.test(item.content || '');
+    const hasVideoTechInfo = item.role === 'assistant' && /^(\*\*)?(task_id|task_[A-Za-z0-9]{10,}|视频已生成完成|视频正在生成中|正在尝试生成视频|视频生成服务暂时不可用|关于视频链接|替代方案|当前状态[：:]|最终状态[：:]|任务信息[：:]|\*\*视频|\*\*任务|\*\*最终|\*\*当前)/i.test((item.content || '').split('\n')[0]);
     const displayItem = hasVideoTechInfo ? { ...item, content: sanitizeVideoContent(item.content) } : item;
     
     return (
