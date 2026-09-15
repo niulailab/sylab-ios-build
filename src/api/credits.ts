@@ -3,9 +3,7 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import type { CreditBalance, CreditTransaction, ModelPricing, ActionPricing, CardRedeemResponse, ApiResponse } from '../types/api';
 
-const API_BASE = Platform.OS === 'web'
-  ? 'https://s.symsgf.xyz'
-  : (Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE || 'https://s.symsgf.xyz');
+import { RUNTIME_BASE as API_BASE } from '../config/runtime';
 
 // 积分服务用独立的 axios 实例，不需要 bearer/session 认证，用 user_id 做标识
 const creditsClient = axios.create({

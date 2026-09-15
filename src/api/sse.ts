@@ -1,6 +1,4 @@
-import Constants from 'expo-constants';
-
-const API_BASE = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE || 'https://s.symsgf.xyz';
+import { RUNTIME_BASE as API_BASE } from '../config/runtime';
 
 export interface TokenUsage {
   input: number;

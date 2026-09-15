@@ -8,7 +8,8 @@
  * XHR.onprogress 在 iOS 原生 / Android 原生 / web PWA 三端都能分块推送。
  */
 
-const QUEUE_BASE = 'https://s.symsgf.xyz/chat-queue';
+import { RUNTIME_BASE } from '../config/runtime';
+const QUEUE_BASE = `${RUNTIME_BASE}/chat-queue`;
 
 export interface QueueSubmitRequest {
   bot_id: string;

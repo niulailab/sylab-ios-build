@@ -10,7 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { ChatMessage, ToolCall } from '../types/api';
 
 
-const API_BASE = 'https://s.symsgf.xyz';
+import { RUNTIME_BASE as API_BASE, toRuntimeUrl } from '../config/runtime';
 
 // Convert HTTP server URLs to HTTPS tunnel for iOS ATS
 function normalizeImageUrl(url: string): string {
@@ -18,12 +18,9 @@ function normalizeImageUrl(url: string): string {
   // 后端 MinIO 内网地址（头像、生成图片等）→ 公网代理路径，去掉签名参数
   const minioM = url.match(/https?:\/\/[^/]*minio[^/]*\/(opencoze\/.*)$/i);
   if (minioM) {
-    return `https://s.symsgf.xyz/minio-files/${minioM[1]}`.split('?')[0];
+    return `${API_BASE}/minio-files/${minioM[1]}`.split('?')[0];
   }
-  return url
-    .replace(/http:\/\/36\.137\.84\.216:9091/g, "https://s.symsgf.xyz")
-    .replace(/http:\/\/127\.0\.0\.1:9091/g, "https://s.symsgf.xyz")
-    .replace(/http:\/\/localhost:9091/g, "https://s.symsgf.xyz");
+  return toRuntimeUrl(url);
 }
 
 interface MessageBubbleProps {

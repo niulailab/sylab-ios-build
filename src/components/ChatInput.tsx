@@ -8,7 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { getBearerToken } from '../api/client';
 
-const API_BASE = 'https://s.symsgf.xyz';
+import { RUNTIME_BASE as API_BASE } from '../config/runtime';
 
 // Module-level storage for pending file blobs when no conversationId exists yet
 let _pendingFileBlobs: Array<{blob: Blob, name: string, type: string}> = [];
@@ -340,7 +340,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setAttachedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const UPLOAD_URL = 'https://s.symsgf.xyz/user-upload';
+  const UPLOAD_URL = `${API_BASE}/user-upload`;
 
   // Upload a single file to /user-upload. Returns the public URL on success, or null.
   // Success criterion = we got a usable public URL (AI reads the image via this URL;

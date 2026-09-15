@@ -5,7 +5,8 @@
  */
 
 // 文件服务基础路径（通过 nginx 代理到 9093 端口）
-const FILES_BASE = 'https://s.symsgf.xyz/project-files';
+import { RUNTIME_BASE } from '../config/runtime';
+const FILES_BASE = `${RUNTIME_BASE}/project-files`;
 
 export interface ProjectFile {
   name: string;

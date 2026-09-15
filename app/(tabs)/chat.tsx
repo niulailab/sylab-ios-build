@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { RUNTIME_BASE } from '../../src/config/runtime';
 import { View, Text, TouchableOpacity, StyleSheet, RefreshControl, TextInput, ActivityIndicator, Alert, Platform } from "react-native";
 import { SafeAlert } from "../../src/utils/safeAlert";
 import { FlatList, Swipeable } from 'react-native-gesture-handler';
@@ -258,7 +259,7 @@ export default function ChatListScreen() {
         await chatApi.deleteConversation(conv.id);
         // 硬删除：物理清除云端数据（对话+消息）
         try {
-          const API_BASE = 'https://s.symsgf.xyz';
+          const API_BASE = RUNTIME_BASE;
           await fetch(`${API_BASE}/sylab-api/api/sylab/conversation/${conv.id}`, {
             method: 'DELETE',
           });

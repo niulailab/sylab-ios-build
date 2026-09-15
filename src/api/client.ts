@@ -2,8 +2,8 @@ import axios, { AxiosInstance, AxiosError } from 'axios';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-const API_BASE = 'https://s.symsgf.xyz'; // Constants.expoConfig?.extra?.EXPO_PUBLIC_API_BASE || 'https://s.symsgf.xyz';
-const OPEN_API_BASE = 'https://s.symsgf.xyz'; // Constants.expoConfig?.extra?.EXPO_PUBLIC_OPEN_API_BASE || 'https://s.symsgf.xyz';
+import { RUNTIME_BASE as API_BASE } from '../config/runtime';
+const OPEN_API_BASE = API_BASE;
 const ENABLE_LOG = Constants.expoConfig?.extra?.EXPO_PUBLIC_ENABLE_API_LOG === 'true';
 
 type AuthMode = 'none' | 'session' | 'bearer' | 'apikey';

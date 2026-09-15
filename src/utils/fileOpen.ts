@@ -1,13 +1,11 @@
+import { toRuntimeUrl } from '../config/runtime';
 import { Linking, Platform, Share, Alert } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 
 // 把自建 http 地址统一换成 https 隧道，规避 iOS ATS
 export function normalizeServerUrl(url: string): string {
   if (!url) return url;
-  return url
-    .replace(/http:\/\/36\.137\.84\.216:9091/g, 'https://s.symsgf.xyz')
-    .replace(/http:\/\/127\.0\.0\.1:9091/g, 'https://s.symsgf.xyz')
-    .replace(/http:\/\/localhost:9091/g, 'https://s.symsgf.xyz');
+  return toRuntimeUrl(url);
 }
 
 const MIME_MAP: { [k: string]: { mime: string; uti: string } } = {

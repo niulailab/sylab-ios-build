@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { RUNTIME_BASE } from '../config/runtime';
 import { View, Text, ActivityIndicator, Animated, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../constants/theme';
@@ -83,7 +84,7 @@ export const DagProgressCard: React.FC<DagProgressCardProps> = ({ conversationId
 
     const fetchProgress = async () => {
       try {
-        const resp = await fetch(`https://s.symsgf.xyz/dag/progress?conv=${encodeURIComponent(conversationId)}`);
+        const resp = await fetch(`${RUNTIME_BASE}/dag/progress?conv=${encodeURIComponent(conversationId)}`);
         const json = await resp.json();
         if (cancelled || json.code !== 0) return;
         let data = json.data;

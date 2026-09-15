@@ -1,3 +1,4 @@
+import { toRuntimeUrl } from '../config/runtime';
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Linking, Platform, Dimensions, Modal, ActivityIndicator } from 'react-native';
 // expo-video dynamically imported to prevent native crash on iOS 26
@@ -11,10 +12,7 @@ const TABLE_SCROLL_W = Math.max(200, (Dimensions.get('window').width - 32) * 0.9
 // Convert HTTP server URLs to HTTPS tunnel URLs to bypass iOS ATS
 function normalizeImageUrl(url: string): string {
   if (!url) return url;
-  return url
-    .replace(/http:\/\/36\.137\.84\.216:9091/g, 'https://s.symsgf.xyz')
-    .replace(/http:\/\/127\.0\.0\.1:9091/g, 'https://s.symsgf.xyz')
-    .replace(/http:\/\/localhost:9091/g, 'https://s.symsgf.xyz');
+  return toRuntimeUrl(url);
 }
 
 interface MarkdownRendererProps {

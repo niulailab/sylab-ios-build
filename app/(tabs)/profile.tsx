@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { RUNTIME_BASE } from '../../src/config/runtime';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Modal, TextInput, Alert, Image, ActivityIndicator, Platform } from "react-native";
 import { SafeAlert } from "../../src/utils/safeAlert";
 import { useRouter } from 'expo-router';
@@ -156,7 +157,7 @@ export default function ProfileScreen() {
       // 该端点只认 session_key 会话 cookie
       if (sessionKey) headers['Cookie'] = `session_key=${sessionKey}`;
       if (patToken) headers['Authorization'] = `Bearer ${patToken}`;
-      const baseUrl = 'https://s.symsgf.xyz';
+      const baseUrl = RUNTIME_BASE;
       const resp = await fetch(`${baseUrl}/api/web/user/update/upload_avatar/`, {
         method: 'POST',
         headers,

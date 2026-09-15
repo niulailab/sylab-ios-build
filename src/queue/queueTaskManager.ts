@@ -1,3 +1,4 @@
+import { RUNTIME_BASE } from '../config/runtime';
 /**
  * queueTaskManager.ts
  * 全局聊天队列任务管理器（模块级单例，生命周期独立于聊天页组件）。
@@ -586,7 +587,7 @@ class QueueTaskManagerImpl {
         const pending = getPendingFiles();
         if (pending.length > 0) {
           for (const pf of pending) {
-            fetch('https://s.symsgf.xyz/project-files/api/files/upload', {
+            fetch(`${RUNTIME_BASE}/project-files/api/files/upload`, {
               method: 'POST',
               headers: {
                 'X-Conversation-Id': convId,
@@ -724,7 +725,7 @@ class QueueTaskManagerImpl {
 
     const poll = async () => {
       try {
-        const resp = await fetch('https://s.symsgf.xyz/video/status/' + taskId);
+        const resp = await fetch(`${RUNTIME_BASE}/video/status/` + taskId);
         const data = await resp.json();
         const parsed = typeof data.data === 'string' ? JSON.parse(data.data || '{}') : data.data || data;
         const status = parsed.status || 'unknown';
