@@ -450,8 +450,9 @@ function extractHtmlTags(text: string): React.ReactNode[] {
     else parts.push(renderVideoTag(match.content, `vid-${keyIdx++}`));
     pos = match.index + match.content.length;
   }
-  if (pos < mdImgConverted.length) parts.push(mdImgConverted.slice(pos) as any);
-  return parts.length > 0 ? parts : [];
+  // [FIX] 只在真正有 img/video 标签时才返回非空，否则返回空数组
+  // 这样普通文本段落会走 else 分支（简单 Text 渲染），不会被兜底 string 阻塞卡片提取
+  return allMatches.length > 0 ? parts : [];
 }
 
 const isTableSeparator = (line: string): boolean => {
@@ -634,6 +635,55 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
   const textColor = isDark ? Colors.textInverse : Colors.text;
   const codeBg = isDark ? '#1e1e1e' : '#f5f5f5';
 
+  // Paragraph-specific inline renderer: file links render as blue text only (cards rendered separately below)
+  const renderInlineForParagraph = (text: string, key: string): React.ReactNode => {
+    const parts: React.ReactNode[] = [];
+    let remaining = text;
+    let k = 0;
+    while (remaining.length > 0) {
+      const boldM = remaining.match(/\*\*(.+?)\*\*/);
+      const italicM = remaining.match(/(^|[^*])\*([^*]+?)\*([^*]|$)/);
+      const codeM = remaining.match(/\`([^\`]+)\`/);
+      const linkM = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
+      type M2 = { type: string; m: RegExpMatchArray; idx: number };
+      const candidates: M2[] = [];
+      if (boldM && boldM.index !== undefined) candidates.push({ type: 'bold', m: boldM, idx: boldM.index });
+      if (italicM && italicM.index !== undefined) candidates.push({ type: 'italic', m: italicM, idx: italicM.index + (italicM[1] || '').length });
+      if (codeM && codeM.index !== undefined) candidates.push({ type: 'code', m: codeM, idx: codeM.index });
+      if (linkM && linkM.index !== undefined) candidates.push({ type: 'link', m: linkM, idx: linkM.index });
+      candidates.sort((a, b) => a.idx - b.idx);
+      const first = candidates[0];
+      if (!first) {
+        if (remaining) parts.push(<Text key={`${key}-pt${k}`} style={{ color: textColor }}>{remaining}</Text>);
+        break;
+      }
+      if (first.idx > 0) parts.push(<Text key={`${key}-ppre${k}`} style={{ color: textColor }}>{remaining.slice(0, first.idx)}</Text>);
+      if (first.type === 'bold') {
+        parts.push(<Text key={`${key}-pb${k}`} style={{ color: textColor, fontWeight: '700' }}>{first.m[1]}</Text>);
+        remaining = remaining.slice(first.idx + first.m[0].length);
+      } else if (first.type === 'italic') {
+        parts.push(<Text key={`${key}-pi${k}`} style={{ color: textColor, fontStyle: 'italic' }}>{first.m[2]}</Text>);
+        remaining = remaining.slice(first.idx + first.m[2].length + 2);
+      } else if (first.type === 'code') {
+        parts.push(<Text key={`${key}-pc${k}`} style={{ color: '#e11d48', backgroundColor: codeBg, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, fontSize: 13 }}>{first.m[1]}</Text>);
+        remaining = remaining.slice(first.idx + first.m[0].length);
+      } else if (first.type === 'link') {
+        const u = first.m[2];
+        // File links: blue text only, cards rendered below
+        if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
+          parts.push(<Text key={`${key}-pvl${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
+        } else if (/\.md(\?|$)/i.test(u)) {
+          parts.push(<Text key={`${key}-pml${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
+        } else {
+          parts.push(<Text key={`${key}-pl${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
+        }
+        remaining = remaining.slice(first.idx + first.m[0].length);
+      }
+      k++;
+    }
+    return parts.length <= 1 ? (parts[0] || <></>) : <>{parts}</>;
+  };
+
   const renderInline = (text: string, key: string): React.ReactNode => {
     // Use earliest-match-wins approach (same proven logic as parseInline in simpleMdToElements)
     const parts: React.ReactNode[] = [];
@@ -814,6 +864,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
       } else {
         const inlineParts = extractHtmlTags(line);
         if (inlineParts && inlineParts.length > 0) {
+          // 有 img/video 标签：提取 HTML 标签渲染，剩余文本正常显示
           elements.push(
             <View key={`p-${i}`} style={{ marginBottom: Spacing.xs }}>
               {inlineParts.map((part, pIdx) => {
@@ -825,7 +876,24 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
             </View>
           );
         } else {
-          elements.push(<Text key={`p-${i}`} selectable style={[styles.paragraph, { color: textColor }]}>{renderInline(line, `p-${i}`)}</Text>);
+          // [FIX] 普通文本段落：文字用 renderInlineForParagraph（文件链接只显示蓝色文字，不渲染卡片）
+          // 文件卡片单独提取渲染在段落下方
+          const fileLinkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+          const fileCards: { label: string; url: string }[] = [];
+          let fm;
+          while ((fm = fileLinkRe.exec(line)) !== null) {
+            if (pickFileInfo(fm[2])) {
+              fileCards.push({ label: fm[1], url: fm[2] });
+            }
+          }
+          elements.push(
+            <View key={`p-${i}`} style={{ marginBottom: Spacing.xs }}>
+              <Text selectable style={[styles.paragraph, { color: textColor }]}>{renderInlineForParagraph(line, `p-${i}`)}</Text>
+              {fileCards.map((fc, fcIdx) => (
+                <View key={`fc-${i}-${fcIdx}`} style={{ marginTop: 6 }}><FileDownloadCard url={fc.url} /></View>
+              ))}
+            </View>
+          );
         }
       }
     }
