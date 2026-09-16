@@ -112,7 +112,7 @@ function createClient(options: ClientOptions): AxiosInstance {
 
 // 4 种客户端实例
 let _sessionId: string | undefined;
-let _bearerToken: string | undefined = process.env.EXPO_PUBLIC_DEFAULT_PAT || "pat_f360e4508904a857bf1466629c9ecc4f53abd2c4cb6572fa76667fceefb24de4";
+let _bearerToken: string | undefined = process.env.EXPO_PUBLIC_DEFAULT_PAT || "pat_fb5f8dccaaf858b78152bff3788686c76a46a4bfe95736eb94441da0d40e6ed4";
 
 export function setSessionId(id: string) { _sessionId = id; }
 export function setBearerToken(token: string) { _bearerToken = token; }

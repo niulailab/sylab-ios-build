@@ -47,7 +47,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ patToken });
       } else if (sessionId) {
         // Old user without PAT in storage - set default fallback
-        const defaultPat = "pat_f360e4508904a857bf1466629c9ecc4f53abd2c4cb6572fa76667fceefb24de4";
+        const defaultPat = "pat_fb5f8dccaaf858b78152bff3788686c76a46a4bfe95736eb94441da0d40e6ed4";
         setBearerToken(defaultPat);
         await Storage.setItem(PAT_KEY, defaultPat);
         set({ patToken: defaultPat });
@@ -87,7 +87,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         setSessionId(sessionKey);
       }
 
-      const defaultPat = process.env.EXPO_PUBLIC_DEFAULT_PAT || 'pat_f360e4508904a857bf1466629c9ecc4f53abd2c4cb6572fa76667fceefb24de4';
+      const defaultPat = process.env.EXPO_PUBLIC_DEFAULT_PAT || 'pat_fb5f8dccaaf858b78152bff3788686c76a46a4bfe95736eb94441da0d40e6ed4';
       await Storage.setItem(PAT_KEY, defaultPat);
       setBearerToken(defaultPat);
       await Storage.setItem(USER_KEY, JSON.stringify(user));
