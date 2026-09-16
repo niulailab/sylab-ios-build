@@ -296,7 +296,6 @@ function TableCopyButton({ headers, rows, isDark }: { headers: string[]; rows: s
     <TouchableOpacity
       onPress={handleCopy}
       style={{
-        position: 'absolute', top: 4, right: 4, zIndex: 10,
         flexDirection: 'row', alignItems: 'center',
         backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
         borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3,
@@ -728,8 +727,11 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
   const plainRows = dataRows.map(r => r.map(c => c.replace(/[*_`]/g, '')));
   return {
     element: (
-      <View key={`table-${startIdx}`} style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm, flexShrink: 0, position: 'relative' }} className="md-table-scroll">
-        <TableCopyButton headers={plainHeaders} rows={plainRows} isDark={isDark} />
+      <View key={`table-${startIdx}`} style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm, flexShrink: 0 }} className="md-table-scroll">
+        {tableBody}
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4 }}>
+          <TableCopyButton headers={plainHeaders} rows={plainRows} isDark={isDark} />
+        </View>
         {Platform.OS === 'web' ? (
           <View style={{ width: '100%', maxWidth: '100%', minWidth: 0, flexShrink: 1, overflowX: 'auto' } as any}>
             {tableBody}
