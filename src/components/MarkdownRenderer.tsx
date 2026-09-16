@@ -628,38 +628,52 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
   const codeBg = isDark ? '#1e1e1e' : '#f5f5f5';
 
   const renderInline = (text: string, key: string): React.ReactNode => {
-    const parts = text.split(/(`[^`]+`)/g);
-    return parts.map((part, i) => {
-      if (part.startsWith('`') && part.endsWith('`')) {
-        return (
-          <Text key={`${key}-code-${i}`} style={[styles.inlineCode, { backgroundColor: codeBg, color: isDark ? '#d4d4d4' : '#334155' }]}>
-            {part.slice(1, -1)}
-          </Text>
-        );
+    // Use earliest-match-wins approach (same proven logic as parseInline in simpleMdToElements)
+    const parts: React.ReactNode[] = [];
+    let remaining = text;
+    let k = 0;
+    while (remaining.length > 0) {
+      const boldM = remaining.match(/\*\*(.+?)\*\*/);
+      const italicM = remaining.match(/(^|[^*])\*([^*]+?)\*([^*]|$)/);
+      const codeM = remaining.match(/`([^`]+)`/);
+      const linkM = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
+      type M = { type: string; m: RegExpMatchArray; idx: number };
+      const candidates: M[] = [];
+      if (boldM && boldM.index !== undefined) candidates.push({ type: 'bold', m: boldM, idx: boldM.index });
+      if (italicM && italicM.index !== undefined) candidates.push({ type: 'italic', m: italicM, idx: italicM.index + (italicM[1] || '').length });
+      if (codeM && codeM.index !== undefined) candidates.push({ type: 'code', m: codeM, idx: codeM.index });
+      if (linkM && linkM.index !== undefined) candidates.push({ type: 'link', m: linkM, idx: linkM.index });
+      candidates.sort((a, b) => a.idx - b.idx);
+      const first = candidates[0];
+      if (!first) {
+        if (remaining) parts.push(<Text key={`${key}-t${k}`} style={{ color: textColor }}>{remaining}</Text>);
+        break;
       }
-      let result: React.ReactNode = part;
-      const boldParts = part.split(/(\*\*[^*]+\*\*)/g);
-      if (boldParts.length > 1) {
-        result = boldParts.map((bp, j) => {
-          if (bp.startsWith('**') && bp.endsWith('**')) {
-            return <Text key={`${key}-b-${j}`} style={{ fontWeight: '700' }}>{bp.slice(2, -2)}</Text>;
-          }
-          const italicParts = bp.split(/(\*[^*]+\*)/g);
-          if (italicParts.length > 1) {
-            return italicParts.map((ip, k) => {
-              if (ip.startsWith('*') && ip.endsWith('*')) {
-                return <Text key={`${key}-i-${j}-${k}`} style={{ fontStyle: 'italic' }}>{ip.slice(1, -1)}</Text>;
-              }
-              return <Text key={`${key}-t-${j}-${k}`} selectable>{ip}</Text>;
-            });
-          }
-          return <React.Fragment key={`${key}-t-${j}`}>{renderLinkedText(bp, `${key}-lk-${j}`, !!isDark, setMdPreviewUrl)}</React.Fragment>;
-        });
+      if (first.idx > 0) parts.push(<Text key={`${key}-pre${k}`} style={{ color: textColor }}>{remaining.slice(0, first.idx)}</Text>);
+      if (first.type === 'bold') {
+        parts.push(<Text key={`${key}-b${k}`} style={{ color: textColor, fontWeight: '700' }}>{first.m[1]}</Text>);
+        remaining = remaining.slice(first.idx + first.m[0].length);
+      } else if (first.type === 'italic') {
+        parts.push(<Text key={`${key}-i${k}`} style={{ color: textColor, fontStyle: 'italic' }}>{first.m[2]}</Text>);
+        remaining = remaining.slice(first.idx + first.m[2].length + 2);
+      } else if (first.type === 'code') {
+        parts.push(<Text key={`${key}-c${k}`} style={{ color: '#e11d48', backgroundColor: codeBg, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, fontSize: 13 }}>{first.m[1]}</Text>);
+        remaining = remaining.slice(first.idx + first.m[0].length);
+      } else if (first.type === 'link') {
+        const u = first.m[2];
+        const fileFi = pickFileInfo(u);
+        if (fileFi) {
+          parts.push(<View key={`${key}-l${k}`} style={{ marginVertical: 6 }}><FileDownloadCard url={u} /></View>);
+        } else if (/\.md(\?|$)/i.test(u)) {
+          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
+        } else {
+          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
+        }
+        remaining = remaining.slice(first.idx + first.m[0].length);
       }
-      // 无加粗：仍需识别链接
-      result = renderLinkedText(part, `${key}-lk0-${i}`, !!isDark, setMdPreviewUrl);
-      return <React.Fragment key={`${key}-${i}`}>{result}</React.Fragment>;
-    });
+      k++;
+    }
+    return parts.length <= 1 ? (parts[0] || <></>) : <>{parts}</>;
   };
 
   // 宽度用屏宽常量估算（首帧定值）。禁止 onLayout setState 回写：原生 Yoga 布局会形成测量反馈环导致消息列表反复重排闪烁
