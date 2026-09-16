@@ -820,9 +820,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
         const u = first.m[2];
-        // [FIX] Video links: use inline video player, not openExternally
+        // [FIX] Video links: blue text only, player rendered below paragraph
         if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
-          parts.push(<View key={`${key}-pvl${k}`} style={{ marginVertical: 6 }}><VideoPlayerInline src={u} videoKey={`${key}-pvl${k}`} /></View>);
+          parts.push(<Text key={`${key}-pvl${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
         } else if (/\.md(\?|$)/i.test(u)) {
           parts.push(<Text key={`${key}-pml${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
         } else {
@@ -1028,19 +1028,27 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
             </View>
           );
         } else {
-          // [FIX] 普通文本段落：文字用 renderInlineForParagraph（文件链接只显示蓝色文字，不渲染卡片）
-          // 文件卡片单独提取渲染在段落下方
+          // [FIX] 普通文本段落：文字用 renderInlineForParagraph（文件/视频链接只显示蓝色文字）
+          // 文件卡片和视频播放器单独提取渲染在段落下方
           const fileLinkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
           const fileCards: { label: string; url: string }[] = [];
+          const videoCards: { label: string; url: string }[] = [];
           let fm;
-          while ((fm = fileLinkRe.exec(line)) !== null) {
-            if (pickFileInfo(fm[2])) {
+          let fmIdx = 0;
+          const tempRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+          while ((fm = tempRe.exec(line)) !== null) {
+            if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(fm[2])) {
+              videoCards.push({ label: fm[1], url: fm[2] });
+            } else if (pickFileInfo(fm[2])) {
               fileCards.push({ label: fm[1], url: fm[2] });
             }
           }
           elements.push(
             <View key={`p-${i}`} style={{ marginBottom: Spacing.xs }}>
               <Text selectable style={[styles.paragraph, { color: textColor }]}>{renderInlineForParagraph(line, `p-${i}`)}</Text>
+              {videoCards.map((vc, vcIdx) => (
+                <View key={`vc-${i}-${vcIdx}`} style={{ marginTop: 6 }}><VideoPlayerInline src={vc.url} videoKey={`vc-${i}-${vcIdx}`} /></View>
+              ))}
               {fileCards.map((fc, fcIdx) => (
                 <View key={`fc-${i}-${fcIdx}`} style={{ marginTop: 6 }}><FileDownloadCard url={fc.url} /></View>
               ))}
