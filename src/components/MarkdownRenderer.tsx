@@ -818,9 +818,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
         const u = first.m[2];
-        // [FIX] Video links: blue text only, player rendered below paragraph
+        // [FIX] Video links: skip in paragraph text, player rendered below
         if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
-          parts.push(<Text key={`${key}-pvl${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
+          // Don't render anything - video player is rendered below the paragraph
+          remaining = remaining.slice(first.idx + first.m[0].length);
+          continue;
         } else if (/\.md(\?|$)/i.test(u)) {
           parts.push(<Text key={`${key}-pml${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
         } else {
