@@ -635,7 +635,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
     while (remaining.length > 0) {
       const boldM = remaining.match(/\*\*(.+?)\*\*/);
       const italicM = remaining.match(/(^|[^*])\*([^*]+?)\*([^*]|$)/);
-      const codeM = remaining.match(/`([^`]+)`/);
+      const codeM = remaining.match(/\`([^\`]+)\`/);
       const linkM = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
       type M = { type: string; m: RegExpMatchArray; idx: number };
       const candidates: M[] = [];
