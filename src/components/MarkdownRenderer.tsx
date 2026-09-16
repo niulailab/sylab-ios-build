@@ -53,6 +53,63 @@ class VideoErrorBoundary extends React.Component<
   }
 }
 
+// 视频 App 内下载按钮：下载到缓存后弹系统分享面板（可"存储到视频/文件"），不跳浏览器
+function VideoDownloadButton({ src }: { src: string }) {
+  const [downloading, setDownloading] = React.useState(false);
+  const [progress, setProgress] = React.useState(0);
+  if (Platform.OS === 'web') return null;
+  const onPress = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setProgress(0);
+    try {
+      await downloadAndShare(src, (r) => setProgress(r));
+    } finally {
+      setTimeout(() => { setDownloading(false); setProgress(0); }, 400);
+    }
+  };
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.7} disabled={downloading}
+      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+        paddingVertical: 9, backgroundColor: '#1f2937' }}>
+      {downloading ? (
+        <>
+          <ActivityIndicator size="small" color="#fff" style={{ marginRight: 6 }} />
+          <Text style={{ color: '#fff', fontSize: 12 }}>
+            {progress >= 1 ? '正在打开…' : `下载中 ${Math.round(progress * 100)}%`}
+          </Text>
+        </>
+      ) : (
+        <>
+          <Text style={{ color: '#fff', fontSize: 15, marginRight: 5 }}>⬇</Text>
+          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600' }}>下载视频</Text>
+        </>
+      )}
+    </TouchableOpacity>
+  );
+}
+
+// 表格专用错误边界：单个表格渲染异常时降级为纯文本，绝不让整张表/整条消息消失
+class TableErrorBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { fallback: React.ReactNode; children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(err: any) {
+    console.warn('[MarkdownRenderer] table render error:', err?.message || err);
+  }
+  render() {
+    if (this.state.hasError) return this.props.fallback;
+    return this.props.children;
+  }
+}
+
 // Inline video player component - dynamic import to prevent native crash on page load
 function VideoPlayerInline({ src, videoKey }: { src: string; videoKey: string }) {
   const [videoModule, setVideoModule] = React.useState<{ useVideoPlayer: any; VideoView: any } | null>(null);
@@ -85,14 +142,19 @@ function VideoPlayerInline({ src, videoKey }: { src: string; videoKey: string })
   }
   if (!videoModule) {
     return (
-      <View style={{ marginVertical: 8, padding: 20, backgroundColor: '#f3f4f6', borderRadius: 12, alignItems: 'center' }}>
-        <Text style={{ color: '#9ca3af', fontSize: 13 }}>加载视频...</Text>
+      <View style={{ marginVertical: 8, height: 200, backgroundColor: '#000', borderRadius: 12,
+        alignItems: 'center', justifyContent: 'center' }}>
+        <ActivityIndicator size="small" color="#9ca3af" />
+        <Text style={{ color: '#9ca3af', fontSize: 13, marginTop: 8 }}>加载视频...</Text>
       </View>
     );
   }
   return (
     <VideoErrorBoundary>
-      <NativeVideoInline src={src} useVideoPlayer={videoModule.useVideoPlayer} VideoView={videoModule.VideoView} />
+      <View style={{ marginVertical: 8, borderRadius: 12, overflow: 'hidden', backgroundColor: '#000' }}>
+        <NativeVideoInline src={src} useVideoPlayer={videoModule.useVideoPlayer} VideoView={videoModule.VideoView} />
+        <VideoDownloadButton src={src} />
+      </View>
     </VideoErrorBoundary>
   );
 }
@@ -100,8 +162,8 @@ function VideoPlayerInline({ src, videoKey }: { src: string; videoKey: string })
 function NativeVideoInline({ src, useVideoPlayer, VideoView }: { src: string; useVideoPlayer: any; VideoView: any }) {
   const player = useVideoPlayer(src, (p: any) => { p.loop = false; });
   return (
-    <View style={{ marginVertical: 8, borderRadius: 12, overflow: 'hidden', backgroundColor: '#000' }}>
-      <VideoView player={player} style={{ width: '100%', height: 200, borderRadius: 12 }} contentFit="contain" allowsFullscreen allowsPictureInPicture />
+    <View style={{ backgroundColor: '#000' }}>
+      <VideoView player={player} style={{ width: '100%', height: 200 }} contentFit="contain" allowsFullscreen allowsPictureInPicture />
     </View>
   );
 }
@@ -689,31 +751,98 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
   // 容差 32px：估算临界窄表（总宽仅超十几 px）归入 flex 自适应一屏；真宽表超数百 px 不受影响
   const scrollable = totalW > availW + 48;
 
-  const cellStyle = (ci: number, isHeader: boolean) => ({
+  // Extract plain text for copy
+  const plainHeaders = headers.map(h => h.replace(/[*_`]/g, ''));
+  const plainRows = dataRows.map(r => r.map(c => c.replace(/[*_`]/g, '')));
+
+  // 纯文本降级（渲染异常/错误边界时使用），保证表格内容永远不会整块消失
+  const fallbackTable = (
+    <View key={`table-fb-${startIdx}`} style={{ width: '100%', marginVertical: Spacing.sm }}>
+      <Text selectable style={{ fontSize: 12, color: textColor, lineHeight: 19 }}>
+        {[plainHeaders.join('  '), ...plainRows.map(r => r.join('  '))].join('\n')}
+      </Text>
+    </View>
+  );
+
+  return {
+    element: (
+      <TableErrorBoundary key={`teb-${startIdx}`} fallback={fallbackTable}>
+        <TableBlock
+          key={`table-${startIdx}`}
+          startIdx={startIdx}
+          headers={headers}
+          dataRows={dataRows}
+          colW={colW}
+          totalW={totalW}
+          scrollable={scrollable}
+          alignments={alignments}
+          isDark={isDark}
+          renderInline={renderInline}
+          plainHeaders={plainHeaders}
+          plainRows={plainRows}
+          borderColor={borderColor}
+          headerBg={headerBg}
+          hintColor={hintColor}
+        />
+      </TableErrorBoundary>
+    ),
+    consumed,
+  };
+}
+
+// 独立表格组件：把横向 ScrollView 的高度状态隔离在单表内部，
+// 并在宽表时用"隐藏实测 + 估算初值"给 ScrollView 锁定确定高度，
+// 根治横向 ScrollView 在 FlatList 行回收时高度坍缩为 0（表格闪一下消失）的问题。
+interface TableBlockProps {
+  startIdx: number;
+  headers: string[];
+  dataRows: string[][];
+  colW: number[];
+  totalW: number;
+  scrollable: boolean;
+  alignments: ('left' | 'center' | 'right')[];
+  isDark: boolean;
+  renderInline: (text: string, key: string) => React.ReactNode;
+  plainHeaders: string[];
+  plainRows: string[][];
+  borderColor: string;
+  headerBg: string;
+  hintColor: string;
+}
+
+function TableBlock(props: TableBlockProps) {
+  const { startIdx, headers, dataRows, colW, totalW, scrollable, alignments,
+    isDark, renderInline, plainHeaders, plainRows, borderColor, headerBg, hintColor } = props;
+
+  // 首帧保守高度估算：表头约 35px、每数据行约 31px、外边框 2px，保证初始绝不为 0
+  const estHeight = 35 + dataRows.length * 31 + 2;
+  const [measuredH, setMeasuredH] = React.useState<number>(estHeight);
+
+  const cellStyle = (ci: number, isHeaderCell: boolean) => ({
     width: colW[ci],
     minWidth: colW[ci],
     flexShrink: 0,
     paddingHorizontal: 10,
-    paddingVertical: isHeader ? 8 : 6,
+    paddingVertical: isHeaderCell ? 8 : 6,
     alignItems: (alignments[ci] === 'center' ? 'center' : alignments[ci] === 'right' ? 'flex-end' : 'flex-start') as any,
     borderRightWidth: ci < headers.length - 1 ? 0.5 : 0,
     borderRightColor: borderColor,
   });
 
-  const tableBody = (
-    <View style={{ borderWidth: 1, borderColor, borderRadius: BorderRadius.md, overflow: 'hidden', flexDirection: 'column', width: scrollable ? totalW : '100%' as any, maxWidth: scrollable ? undefined : ('100%' as any), minWidth: scrollable ? totalW : 0, flexShrink: 0 }}>
+  const buildBody = (prefix: string) => (
+    <View key={`${prefix}-wrap`} style={{ borderWidth: 1, borderColor, borderRadius: BorderRadius.md, overflow: 'hidden', flexDirection: 'column', width: scrollable ? totalW : '100%' as any, flexShrink: 0 }}>
       <View style={{ flexDirection: 'row', backgroundColor: headerBg, borderBottomWidth: 1, borderBottomColor: borderColor }}>
         {headers.map((cell, ci) => (
-          <View key={`th-${ci}`} style={cellStyle(ci, true)}>
-            <View style={{ flex: 1 }}>{renderInline(cell, `th-${ci}`)}</View>
+          <View key={`${prefix}-th-${ci}`} style={cellStyle(ci, true)}>
+            <View style={{ flex: 1 }}>{renderInline(cell, `${prefix}-th-${ci}`)}</View>
           </View>
         ))}
       </View>
       {dataRows.map((row, ri) => (
-        <View key={`tr-${ri}`} style={{ flexDirection: 'row', borderBottomWidth: ri < dataRows.length - 1 ? 0.5 : 0, borderBottomColor: borderColor }}>
+        <View key={`${prefix}-tr-${ri}`} style={{ flexDirection: 'row', flexShrink: 0, borderBottomWidth: ri < dataRows.length - 1 ? 0.5 : 0, borderBottomColor: borderColor }}>
           {row.map((cell, ci) => (
-            <View key={`td-${ri}-${ci}`} style={cellStyle(ci, false)}>
-              <View style={{ flex: 1 }}>{renderInline(cell, `td-${ri}-${ci}`)}</View>
+            <View key={`${prefix}-td-${ri}-${ci}`} style={cellStyle(ci, false)}>
+              <View style={{ flex: 1 }}>{renderInline(cell, `${prefix}-td-${ri}-${ci}`)}</View>
             </View>
           ))}
         </View>
@@ -721,41 +850,46 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
     </View>
   );
 
-  // Extract plain text for copy
-  const plainHeaders = headers.map(h => h.replace(/[*_`]/g, ''));
-  const plainRows = dataRows.map(r => r.map(c => c.replace(/[*_`]/g, '')));
-  return {
-    element: (
-      <View key={`table-${startIdx}`} style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm, flexShrink: 0 }} className="md-table-scroll">
-                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4 }}>
-          <TableCopyButton headers={plainHeaders} rows={plainRows} isDark={isDark} />
+  return (
+    <View style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm, flexShrink: 0 }} className="md-table-scroll">
+      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4 }}>
+        <TableCopyButton headers={plainHeaders} rows={plainRows} isDark={isDark} />
+      </View>
+      {Platform.OS === 'web' ? (
+        <View style={{ width: '100%', maxWidth: '100%', minWidth: 0, flexShrink: 1, overflowX: 'auto' } as any}>
+          {buildBody('w' + startIdx)}
         </View>
-        {Platform.OS === 'web' ? (
-          <View style={{ width: '100%', maxWidth: '100%', minWidth: 0, flexShrink: 1, overflowX: 'auto' } as any}>
-            {tableBody}
-          </View>
-        ) : scrollable ? (
+      ) : scrollable ? (
+        <>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator
             directionalLockEnabled
             alwaysBounceHorizontal={false}
             alwaysBounceVertical={false}
-            style={{ width: '100%' }}
+            style={{ width: '100%', height: measuredH }}
             contentContainerStyle={{ flexGrow: 0, flexShrink: 0, alignItems: 'flex-start' }}
           >
-            {tableBody}
+            {buildBody('s' + startIdx)}
           </ScrollView>
-        ) : (
-          tableBody
-        )}
-        {scrollable ? (
+          {/* 隐藏测量层：实测真实内容高度后回写锁定，opacity:0 保留布局以获得真实高度 */}
+          <View
+            pointerEvents="none"
+            style={{ position: 'absolute', opacity: 0, left: 0, top: 0, width: totalW, height: undefined }}
+            onLayout={(e) => {
+              const h = Math.ceil(e.nativeEvent.layout.height);
+              if (h > 0 && Math.abs(h - measuredH) >= 2) setMeasuredH(h);
+            }}
+          >
+            {buildBody('m' + startIdx)}
+          </View>
           <Text style={{ fontSize: 11, color: hintColor, marginTop: 4, width: '100%', textAlign: 'right' }}>左右滑动查看更多列 ›</Text>
-        ) : null}
-      </View>
-    ),
-    consumed,
-  };
+        </>
+      ) : (
+        buildBody('n' + startIdx)
+      )}
+    </View>
+  );
 }
 
 // ===== Main component =====
@@ -818,14 +952,21 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
         const u = first.m[2];
-        // [FIX] Video links: skip in paragraph text, player rendered below
+        // [FIX] 视频链接：段落文字里跳过，播放器在段落下方块级渲染
         if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
-          // Don't render anything - video player is rendered below the paragraph
           remaining = remaining.slice(first.idx + first.m[0].length);
           continue;
-        } else if (/\.md(\?|$)/i.test(u)) {
+        }
+        // [FIX] 文件链接（Office/PDF/zip 等）：段落文字里跳过，FileDownloadCard 在段落下方块级渲染，
+        // 预览/下载全部 App 内闭环，绝不跳外部浏览器
+        if (pickFileInfo(u) && !/\.md(\?|$)/i.test(u)) {
+          remaining = remaining.slice(first.idx + first.m[0].length);
+          continue;
+        }
+        if (/\.md(\?|$)/i.test(u)) {
           parts.push(<Text key={`${key}-pml${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
         } else {
+          // 仅真正的普通网页链接才允许外部浏览器
           parts.push(<Text key={`${key}-pl${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
         }
         remaining = remaining.slice(first.idx + first.m[0].length);

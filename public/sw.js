@@ -1,6 +1,6 @@
 
-// Sylab APP Service Worker v1.4.0
-const CACHE_NAME = 'sylab-cache-v1.9.0';
+// Sylab APP Service Worker v2.10.0
+const CACHE_NAME = 'sylab-cache-v2.10.0';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

@@ -67,9 +67,10 @@ export function openExternally(url: string) {
   return Linking.openURL(normalizeServerUrl(url)).catch(() => {});
 }
 
-// 文件/图片：iOS 换壳环境直接跳 Safari 下载（最稳，避免 Share 模块和文件系统权限问题）
-// Android 用 Share 面板。
-// onProgress: 0~1 下载进度回调（可选，iOS 跳浏览器时不触发）。
+// 文件/视频/图片：App 内闭环下载，绝不跳外部浏览器。
+// 流程：下载到 App 缓存目录（带进度）→ expo-sharing 系统分享面板（iOS 可"存储到文件/视频"，
+// 全程停留在 App 上下文，不打开 Safari）；expo-sharing 不可用时兜底 React Native Share。
+// onProgress: 0~1 下载进度回调（可选）。
 export async function downloadAndShare(
   rawUrl: string,
   onProgress?: (ratio: number) => void
@@ -79,37 +80,10 @@ export async function downloadAndShare(
     try { window.open(url, '_blank'); } catch {}
     return;
   }
-  // iOS 换壳：直接跳 Safari 下载，系统自动处理文件预览/存储
-  if (Platform.OS === 'ios') {
-    try {
-      const canOpen = await Linking.canOpenURL(url);
-      if (canOpen) {
-        await Linking.openURL(url);
-      } else {
-        // Safari 无法打开，尝试 Share 兜底
-        const { name, info } = fileMeta(url);
-        const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
-        const target = FileSystem.cacheDirectory + safeName;
-        const downloadResumable = FileSystem.createDownloadResumable(url, target, {}, onProgress ? (dp) => {
-          const total = dp.totalBytesExpectedToWrite || 0;
-          const ratio = total > 0 ? Math.min(1, dp.totalBytesWritten / total) : 0;
-          onProgress(ratio);
-        } : undefined);
-        const result = await downloadResumable.downloadAsync();
-        const uri = (result as any)?.uri || target;
-        await Share.share({ url: uri, filename: safeName } as any);
-      }
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      console.warn('[fileOpen] iOS download failed:', msg);
-      Alert.alert('下载失败', '文件下载失败，请检查网络后重试。');
-    }
-    return;
-  }
-  // Android
+  // iOS / Android 统一：App 内下载 + 系统分享面板（不跳浏览器）
   const { name, info } = fileMeta(url);
   const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
-  const target = FileSystem.cacheDirectory + safeName;
+  const target = FileSystem.cacheDirectory + 'dl_' + safeName;
   try {
     let lastEmit = 0;
     const downloadResumable = FileSystem.createDownloadResumable(
@@ -135,14 +109,20 @@ export async function downloadAndShare(
       try {
         const Sharing = require('expo-sharing');
         if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(uri, { mimeType: info.mime, dialogTitle: safeName });
+          // iOS UTI / Android mimeType 都传上，分享面板可正确识别"存储到文件/视频"
+          await Sharing.shareAsync(uri, {
+            mimeType: info.mime,
+            UTI: info.uti,
+            dialogTitle: safeName,
+          } as any);
           handled = true;
         }
       } catch (se) { console.warn('[fileOpen] expo-sharing unavailable:', se); }
       if (!handled) {
-        await Share.share({ url: 'file://' + uri, title: safeName } as any);
+        await Share.share({ url: uri, filename: safeName, title: safeName } as any);
       }
     } catch (se: any) {
+      // 用户主动关闭分享面板不算错误
       if (se && /dismiss|cancel/i.test(String(se.message || ''))) return;
     }
   } catch (e: any) {
