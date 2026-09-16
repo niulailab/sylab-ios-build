@@ -214,13 +214,18 @@ function simpleMdToElements(md: string, isDark: boolean): React.ReactNode[] {
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
         const u = first.m[2];
-        const fileFi = pickFileInfo(u);
-        if (fileFi) {
-          // 文件链接：显示文件卡片（图标 + 文件名 + 大小 + 下载按钮）
-          parts.push(<View key={`${key}-l${k}`} style={{ marginVertical: 6 }}><FileDownloadCard url={u} /></View>);
+        // [FIX] 视频链接使用内联播放器，不跳外部浏览器
+        if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
+          parts.push(<View key={`${key}-vid${k}`} style={{ marginVertical: 6 }}><VideoPlayerInline src={u} videoKey={`${key}-vid${k}`} /></View>);
         } else {
-          // 普通链接：蓝色下划线文字
-          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => openExternally(u)}>{first.m[1]}</Text>);
+          const fileFi = pickFileInfo(u);
+          if (fileFi) {
+            // 文件链接：显示文件卡片（图标 + 文件名 + 大小 + 下载按钮）
+            parts.push(<View key={`${key}-l${k}`} style={{ marginVertical: 6 }}><FileDownloadCard url={u} /></View>);
+          } else {
+            // 普通链接：蓝色下划线文字
+            parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => openExternally(u)}>{first.m[1]}</Text>);
+          }
         }
         remaining = remaining.slice(first.idx + first.m[0].length);
       }
@@ -661,13 +666,18 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
         const u = first.m[2];
-        const fileFi = pickFileInfo(u);
-        if (fileFi) {
-          parts.push(<View key={`${key}-l${k}`} style={{ marginVertical: 6 }}><FileDownloadCard url={u} /></View>);
-        } else if (/\.md(\?|$)/i.test(u)) {
-          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
+        // [FIX] 视频链接使用内联播放器
+        if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
+          parts.push(<View key={`${key}-vid${k}`} style={{ marginVertical: 6 }}><VideoPlayerInline src={u} videoKey={`${key}-vid${k}`} /></View>);
         } else {
-          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
+          const fileFi = pickFileInfo(u);
+          if (fileFi) {
+            parts.push(<View key={`${key}-l${k}`} style={{ marginVertical: 6 }}><FileDownloadCard url={u} /></View>);
+          } else if (/\.md(\?|$)/i.test(u)) {
+            parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
+          } else {
+            parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
+          }
         }
         remaining = remaining.slice(first.idx + first.m[0].length);
       }
