@@ -843,7 +843,7 @@ function TableBlock(props: TableBlockProps) {
       <View style={{ flexDirection: 'row', backgroundColor: headerBg, borderBottomWidth: 1, borderBottomColor: borderColor }}>
         {headers.map((cell, ci) => (
           <View key={`${prefix}-th-${ci}`} style={cellStyle(prefix, ci, true)}>
-            <View style={{ flex: 1 }}>{renderInline(cell, `${prefix}-th-${ci}`)}</View>
+            <Text selectable style={{ fontSize: FontSize.sm, fontWeight: '700', color: textColor, flexWrap: 'wrap', width: '100%' }}>{renderInline(cell, `${prefix}-th-${ci}`)}</Text>
           </View>
         ))}
       </View>
@@ -851,7 +851,7 @@ function TableBlock(props: TableBlockProps) {
         <View key={`${prefix}-tr-${ri}`} style={{ flexDirection: 'row', flexShrink: 0, borderBottomWidth: ri < dataRows.length - 1 ? 0.5 : 0, borderBottomColor: borderColor }}>
           {row.map((cell, ci) => (
             <View key={`${prefix}-td-${ri}-${ci}`} style={cellStyle(prefix, ci, false)}>
-              <View style={{ flex: 1 }}>{renderInline(cell, `${prefix}-td-${ri}-${ci}`)}</View>
+              <Text selectable style={{ fontSize: FontSize.sm, color: textColor, flexWrap: 'wrap', width: '100%' }}>{renderInline(cell, `${prefix}-td-${ri}-${ci}`)}</Text>
             </View>
           ))}
         </View>
