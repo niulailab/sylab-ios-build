@@ -4,6 +4,7 @@ import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Linking, P
 // expo-video dynamically imported to prevent native crash on iOS 26
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { ZoomableImage } from './ImageLightbox';
+import * as Clipboard from 'expo-clipboard';
 import { downloadAndShare, openExternally, previewFile, fetchFileSize, formatFileSize } from '../utils/fileOpen';
 
 // Fixed pixel width for horizontal table scroll (avoids flexbox circular dependency)
@@ -133,15 +134,8 @@ function renderVideoTag(tag: string, key: string): React.ReactNode {
     if (sourceMatch) src = sourceMatch[1];
   }
   if (!src) return null;
-  return (
-    <View key={key} style={styles.videoContainer}>
-      <TouchableOpacity style={styles.videoLink} activeOpacity={0.7} onPress={() => openExternally(src)}>
-        <Text style={{ color: '#fff', fontSize: FontSize.sm }}>▶</Text>
-        <Text style={styles.videoLinkText}>点击播放视频</Text>
-        <Text style={{ color: '#94a3b8', fontSize: 11, flex: 1, marginLeft: 8 }} numberOfLines={1}>{src.substring(0, 60)}...</Text>
-      </TouchableOpacity>
-    </View>
-  );
+  // [FIX] Use inline video player instead of openExternally
+  return <VideoPlayerInline key={key} src={src} videoKey={key} />;
 }
 
 const OFFICE_EXT_MAP: { [k: string]: { icon: string; color: string; label: string } } = {
@@ -171,6 +165,149 @@ function pickFileInfo(url: string): { ext: string; name: string; info: any } | n
   return { ext, name, info };
 }
 
+
+
+// ===== Syntax Highlight Helper =====
+function highlightCode(code: string, lang: string, isDark: boolean, keyPrefix: string): React.ReactNode[] {
+  const defaultColor = isDark ? '#dcdcdc' : '#333';
+  const keywordColor = '#c678dd';
+  const stringColor = '#98c379';
+  const commentColor = '#5c6370';
+  const numberColor = '#d19a66';
+  const funcColor = '#61afef';
+
+  const jsKeywords = 'const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|this|class|extends|import|export|from|default|try|catch|finally|throw|async|await|yield|typeof|instanceof|in|of|null|undefined|true|false|void|delete';
+  const pyKeywords = 'def|return|if|elif|else|for|while|import|from|class|try|except|finally|raise|with|as|pass|break|continue|and|or|not|in|is|None|True|False|lambda|yield|global|nonlocal|assert|del|print|async|await';
+
+  let keywords: string;
+  if (lang === 'python' || lang === 'py') {
+    keywords = pyKeywords;
+  } else {
+    keywords = jsKeywords;
+  }
+
+  const tokens: { text: string; color: string }[] = [];
+  
+  // Build regex parts
+  const isPy = (lang === 'python' || lang === 'py');
+  const commentPart = isPy ? '(#[^\n]*)' : '(//[^\n]*|/\*[\s\S]*?\*/)';
+  const stringPart = '("(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)';
+  const keywordPart = '(\\b(?:' + keywords + ')\\b)';
+  const numberPart = '(\\b\\d+\\.?\\d*\\b)';
+  const funcPart = '(\\b[a-zA-Z_]\\w*\\b)\\s*(?=\\()';
+
+  const tokenPattern = new RegExp(
+    commentPart + '|' + stringPart + '|' + keywordPart + '|' + numberPart + '|' + funcPart,
+    'g'
+  );
+
+  let lastIndex = 0;
+  let match;
+  while ((match = tokenPattern.exec(code)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push({ text: code.slice(lastIndex, match.index), color: defaultColor });
+    }
+    if (match[1]) {
+      tokens.push({ text: match[1], color: commentColor });
+    } else if (match[2]) {
+      tokens.push({ text: match[2], color: stringColor });
+    } else if (match[3]) {
+      tokens.push({ text: match[3], color: keywordColor });
+    } else if (match[4]) {
+      tokens.push({ text: match[4], color: numberColor });
+    } else if (match[5]) {
+      tokens.push({ text: match[5], color: funcColor });
+      lastIndex = match.index + match[5].length;
+      continue;
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < code.length) {
+    tokens.push({ text: code.slice(lastIndex), color: defaultColor });
+  }
+
+  if (tokens.length === 0) {
+    return [<Text key={keyPrefix + '-hl0'} style={{ color: defaultColor }}>{code}</Text>];
+  }
+
+  return tokens.map((t, idx) => (
+    <Text key={keyPrefix + '-hl' + idx} style={{ color: t.color }}>{t.text}</Text>
+  ));
+}
+
+// ===== Copy to Clipboard Helper =====
+async function copyToClipboard(text: string) {
+  try {
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      await Clipboard.setStringAsync(text);
+    }
+  } catch (e) {
+    try {
+      if (Platform.OS !== 'web') {
+        await Clipboard.setStringAsync(text);
+      }
+    } catch (_) {}
+  }
+}
+
+// ===== Copy Button Component =====
+function CodeCopyButton({ text, isDark }: { text: string; isDark: boolean }) {
+  const [copied, setCopied] = React.useState(false);
+  const timerRef = React.useRef<any>(null);
+  const handleCopy = async () => {
+    await copyToClipboard(text);
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <TouchableOpacity
+      onPress={handleCopy}
+      style={{
+        position: 'absolute', top: 6, right: 6, zIndex: 10,
+        flexDirection: 'row', alignItems: 'center',
+        backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
+        borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3,
+      }}
+    >
+      <Text style={{ fontSize: 11, color: isDark ? '#9ca3af' : '#6b7280' }}>
+        {copied ? '✓ 已复制' : '📋 复制'}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+function TableCopyButton({ headers, rows, isDark }: { headers: string[]; rows: string[][]; isDark: boolean }) {
+  const [copied, setCopied] = React.useState(false);
+  const timerRef = React.useRef<any>(null);
+  const handleCopy = async () => {
+    const headerLine = '| ' + headers.join(' | ') + ' |';
+    const sepLine = '| ' + headers.map(() => '---').join(' | ') + ' |';
+    const dataLines = rows.map(r => '| ' + r.join(' | ') + ' |');
+    const md = [headerLine, sepLine, ...dataLines].join('\n');
+    await copyToClipboard(md);
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <TouchableOpacity
+      onPress={handleCopy}
+      style={{
+        position: 'absolute', top: 4, right: 4, zIndex: 10,
+        flexDirection: 'row', alignItems: 'center',
+        backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
+        borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3,
+      }}
+    >
+      <Text style={{ fontSize: 11, color: isDark ? '#9ca3af' : '#6b7280' }}>
+        {copied ? '✓ 已复制' : '📋 复制表格'}
+      </Text>
+    </TouchableOpacity>
+  );
+}
 
 // ============ Markdown Preview Modal (App内渲染.md) ============
 function simpleMdToElements(md: string, isDark: boolean): React.ReactNode[] {
@@ -241,7 +378,15 @@ function simpleMdToElements(md: string, isDark: boolean): React.ReactNode[] {
       i++;
       while (i < lines.length && !lines[i].startsWith('```')) { codeLines.push(lines[i]); i++; }
       if (i < lines.length) i++;
-      els.push(<View key={`cb-${els.length}`} style={{ backgroundColor: cb, borderRadius: 8, padding: 10, marginVertical: 6 }}><Text style={{ color: isDark ? '#e2e8f0' : '#1e293b', fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }} selectable>{codeLines.join('\n')}</Text></View>);
+      {
+        const codeText = codeLines.join('\n');
+        els.push(<View key={`cb-${els.length}`} style={{ backgroundColor: cb, borderRadius: 8, padding: 10, marginVertical: 6, position: 'relative' }}>
+          <CodeCopyButton text={codeText} isDark={isDark} />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <Text style={{ color: isDark ? '#e2e8f0' : '#1e293b', fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }} selectable>{highlightCode(codeText, '', isDark, `cb-${els.length}`)}</Text>
+          </ScrollView>
+        </View>);
+      }
       continue;
     }
     const hM = line.match(/^(#{1,6})\s+(.+)$/);
@@ -578,9 +723,13 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
     </View>
   );
 
+  // Extract plain text for copy
+  const plainHeaders = headers.map(h => h.replace(/[*_`]/g, ''));
+  const plainRows = dataRows.map(r => r.map(c => c.replace(/[*_`]/g, '')));
   return {
     element: (
-      <View key={`table-${startIdx}`} style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm, flexShrink: 0 }} className="md-table-scroll">
+      <View key={`table-${startIdx}`} style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm, flexShrink: 0, position: 'relative' }} className="md-table-scroll">
+        <TableCopyButton headers={plainHeaders} rows={plainRows} isDark={isDark} />
         {Platform.OS === 'web' ? (
           <View style={{ width: '100%', maxWidth: '100%', minWidth: 0, flexShrink: 1, overflowX: 'auto' } as any}>
             {tableBody}
@@ -669,9 +818,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
         const u = first.m[2];
-        // File links: blue text only, cards rendered below
+        // [FIX] Video links: use inline video player, not openExternally
         if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
-          parts.push(<Text key={`${key}-pvl${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
+          parts.push(<View key={`${key}-pvl${k}`} style={{ marginVertical: 6 }}><VideoPlayerInline src={u} videoKey={`${key}-pvl${k}`} /></View>);
         } else if (/\.md(\?|$)/i.test(u)) {
           parts.push(<Text key={`${key}-pml${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
         } else {
@@ -754,10 +903,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
       } else {
         inCodeBlock = false;
         elements.push(
-          <View key={`code-${i}`} style={[styles.codeBlock, { backgroundColor: codeBg }]}>
+          <View key={`code-${i}`} style={[styles.codeBlock, { backgroundColor: codeBg, position: 'relative' }]}>
+            <CodeCopyButton text={codeContent} isDark={!!isDark} />
             {codeLang ? <Text style={[styles.codeLang, { color: isDark ? '#9b9b9b' : Colors.textSecondary }]}>{codeLang}</Text> : null}
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <Text style={[styles.codeText, { color: isDark ? '#dcdcdc' : '#333' }]} selectable>{codeContent}</Text>
+              <Text style={[styles.codeText]} selectable>{highlightCode(codeContent, codeLang, !!isDark, `code-${i}`)}</Text>
             </ScrollView>
           </View>
         );
