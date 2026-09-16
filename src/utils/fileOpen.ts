@@ -47,17 +47,30 @@ export function formatFileSize(bytes?: number | null): string {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
-// HEAD 请求拿文件大小（nginx 支持 content-length）；失败静默返回 null，不阻塞 UI
+// 文件大小：优先 HEAD；HEAD 不被支持（501/405）时用 GET Range 取首字节读 Content-Range/Content-Length
 export async function fetchFileSize(rawUrl: string): Promise<number | null> {
   const url = normalizeServerUrl(rawUrl);
   if (Platform.OS === 'web') return null;
-  try {
-    const res = await fetch(url, { method: 'HEAD' });
-    const len = res.headers.get('Content-Length') || res.headers.get('content-length');
-    if (len) {
-      const n = parseInt(len, 10);
+  const parseLen = (res: Response): number | null => {
+    const cr = res.headers.get('Content-Range') || res.headers.get('content-range');
+    if (cr && cr.includes('/')) {
+      const total = cr.split('/').pop() || '';
+      const n = parseInt(total, 10);
       if (!isNaN(n) && n > 0) return n;
     }
+    const len = res.headers.get('Content-Length') || res.headers.get('content-length');
+    if (len) { const n = parseInt(len, 10); if (!isNaN(n) && n > 0) return n; }
+    return null;
+  };
+  try {
+    const head = await fetch(url, { method: 'HEAD' });
+    const n = parseLen(head);
+    if (n) return n;
+  } catch {}
+  try {
+    const get = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+    const n = parseLen(get);
+    if (n) return n;
   } catch {}
   return null;
 }
@@ -76,89 +89,85 @@ function safeEncodeUrl(u: string): string {
   }
 }
 
-// 兜底下载：主下载器（NSURLSession）对外域 CDN 偶发失败时，用 fetch（与图片/视频同一网络栈）
-// 拉取后以 base64 写入缓存。适合几十 MB 以内的文件（海螺视频通常 1~5MB）。
-async function fetchDownloadFallback(url: string, target: string): Promise<string> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  const blob: any = await resp.blob();
-  const base64: string = await new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
-    fr.onerror = () => reject(new Error('read error'));
-    fr.readAsDataURL(blob);
+// ---- 二进制落盘（09-13 真机验证过的唯一稳定路径）----
+// 关键：在免证书原生包里，FileSystem.downloadAsync / createDownloadResumable 保存二进制会异常，
+// 必须 fetch/XHR 拿到 ArrayBuffer → 分块 base64 → writeAsStringAsync(Base64) 落盘。
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 0x8000; // 32KB，避免 String.fromCharCode.apply 参数过多
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const slice = bytes.subarray(i, Math.min(i + chunk, bytes.length));
+    let part = '';
+    for (let j = 0; j < slice.length; j++) part += String.fromCharCode(slice[j]);
+    binary += part;
+  }
+  return btoa(binary);
+}
+
+function xhrDownload(url: string, onProgress?: (ratio: number) => void): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('GET', url, true);
+    x.responseType = 'arraybuffer';
+    x.timeout = 180000;
+    let lastEmit = 0;
+    x.onprogress = (e: any) => {
+      if (!onProgress || !e.lengthComputable) return;
+      const ratio = Math.max(0, Math.min(1, e.loaded / e.total));
+      const now = Date.now();
+      if (ratio - lastEmit > 0.03 || now - lastEmit > 200 || ratio >= 1) { lastEmit = ratio; onProgress(ratio); }
+    };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) resolve(x.response as ArrayBuffer);
+      else reject(new Error('HTTP ' + x.status));
+    };
+    x.onerror = () => reject(new Error('网络请求失败'));
+    x.ontimeout = () => reject(new Error('下载超时'));
+    x.send();
   });
-  await FileSystem.writeAsStringAsync(target, base64, { encoding: FileSystem.EncodingType.Base64 });
-  return target;
+}
+
+// 下载到缓存并返回本地 file:// uri（预览/下载共用，已验证稳定）
+async function downloadBinaryToCache(
+  rawUrl: string,
+  prefix: string,
+  onProgress?: (ratio: number) => void
+): Promise<{ uri: string; safeName: string; mime: string; uti: string }> {
+  const url = normalizeServerUrl(rawUrl);
+  const { name, info } = fileMeta(url);
+  const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
+  const target = FileSystem.cacheDirectory + prefix + Date.now() + '_' + safeName;
+  try { await FileSystem.deleteAsync(target, { idempotent: true }); } catch {}
+  const encUrl = safeEncodeUrl(url);
+  const buf = await xhrDownload(encUrl, onProgress);
+  if (!buf || buf.byteLength === 0) throw new Error('empty body');
+  const b64 = arrayBufferToBase64(buf);
+  await FileSystem.writeAsStringAsync(target, b64, { encoding: FileSystem.EncodingType.Base64 });
+  const st = await FileSystem.getInfoAsync(target, { size: true });
+  if (!st.exists || !(st as any).size) throw new Error('file not written');
+  onProgress?.(1);
+  return { uri: target, safeName, mime: info.mime, uti: info.uti };
 }
 
 // 文件/视频/图片：App 内闭环下载，绝不跳外部浏览器。
-// 流程：下载到 App 缓存目录（带进度）→ expo-sharing 系统分享面板（iOS 可"存储到文件/视频"，
-// 全程停留在 App 上下文，不打开 Safari）；expo-sharing 不可用时兜底 React Native Share。
-// onProgress: 0~1 下载进度回调（可选）。
+// 下载到 App 缓存 → expo-sharing 系统分享面板（iOS 可"存储到文件/视频"，全程不离开 App）。
 export async function downloadAndShare(
   rawUrl: string,
   onProgress?: (ratio: number) => void
 ): Promise<void> {
-  const url = normalizeServerUrl(rawUrl);
   if (Platform.OS === 'web') {
-    try { window.open(url, '_blank'); } catch {}
+    try { window.open(normalizeServerUrl(rawUrl), '_blank'); } catch {}
     return;
   }
-  // iOS / Android 统一：App 内下载 + 系统分享面板（不跳浏览器）
-  const { name, info } = fileMeta(url);
-  const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
-  const target = FileSystem.cacheDirectory + 'dl_' + Date.now() + '_' + safeName;
-  const encUrl = safeEncodeUrl(url);
-  let uri = '';
   try {
-    let lastEmit = 0;
-    const downloadResumable = FileSystem.createDownloadResumable(
-      encUrl,
-      target,
-      {},
-      (dp) => {
-        if (!onProgress) return;
-        const total = dp.totalBytesExpectedToWrite || 0;
-        const ratio = total > 0 ? Math.min(1, dp.totalBytesWritten / total) : 0;
-        const now = Date.now();
-        if (ratio - lastEmit > 0.03 || now - lastEmit > 200 || ratio >= 1) {
-          lastEmit = ratio;
-          onProgress(ratio);
-        }
-      }
-    );
-    let result: any;
-    try {
-      result = await downloadResumable.downloadAsync();
-      uri = result?.uri || target;
-    } catch (primaryErr: any) {
-      // 主下载器对外域 CDN 偶发失败 → fetch 兜底（与播放器/图片同一网络栈）
-      console.warn('[fileOpen] primary download failed, try fetch fallback:', primaryErr?.message || primaryErr);
-      try {
-        uri = await fetchDownloadFallback(encUrl, target);
-      } catch (fbErr: any) {
-        throw new Error((primaryErr?.message || 'download error') + ' / fallback: ' + (fbErr?.message || fbErr));
-      }
-    }
-    if (!uri) uri = target;
-    // 校验文件确实落盘且非空
-    try {
-      const info2 = await FileSystem.getInfoAsync(uri, { size: true });
-      if (!info2.exists || !(info2 as any).size) throw new Error('empty file');
-    } catch (ve) { throw new Error('downloaded file invalid: ' + (ve as any)?.message); }
-    onProgress?.(1);
+    const { uri, safeName, mime, uti } = await downloadBinaryToCache(rawUrl, 'dl_', onProgress);
     try {
       let handled = false;
       try {
         const Sharing = require('expo-sharing');
         if (await Sharing.isAvailableAsync()) {
-          // iOS UTI / Android mimeType 都传上，分享面板可正确识别"存储到文件/视频"
-          await Sharing.shareAsync(uri, {
-            mimeType: info.mime,
-            UTI: info.uti,
-            dialogTitle: safeName,
-          } as any);
+          await Sharing.shareAsync(uri, { mimeType: mime, UTI: uti, dialogTitle: safeName } as any);
           handled = true;
         }
       } catch (se) { console.warn('[fileOpen] expo-sharing unavailable:', se); }
@@ -177,14 +186,11 @@ export async function downloadAndShare(
 }
 
 // App 内预览（QuickLook / FileProvider）。
-// v105 第一批（纯 JS 换壳）：原生模块未接入前，下载后直接交给系统分享面板，
-// 用户可在面板里选"存储到文件/用 WPS·Pages 打开"，功能不缺失。
-// 接入 react-native-file-viewer（原生编译包）后，此函数自动切换为 App 内 QuickLook 预览。
-let _nativeViewer: { open: (path: string, mime?: string) => Promise<void> } | null | undefined;
+// react-native-file-viewer 原生模块存在（原生编译包）时，下载到缓存后用系统预览器原地打开，不弹分享、不跳浏览器。
+let _nativeViewer: { open: (path: string) => Promise<void> } | null | undefined;
 function tryGetNativeViewer() {
   if (_nativeViewer !== undefined) return _nativeViewer;
   try {
-    // 原生模块存在（原生编译包）时启用；换壳包 require 失败则走分享兜底
     const RNFileViewer = require('react-native-file-viewer').default;
     _nativeViewer = {
       open: (path: string) =>
@@ -200,16 +206,11 @@ function tryGetNativeViewer() {
 }
 
 export async function previewFile(rawUrl: string): Promise<void> {
-  const url = normalizeServerUrl(rawUrl);
-  if (Platform.OS === 'web') { openExternally(url); return; }
+  if (Platform.OS === 'web') { openExternally(rawUrl); return; }
   const viewer = tryGetNativeViewer();
   if (viewer) {
-    // 原生 QuickLook 路径：下载到缓存再用系统预览器打开（不弹分享面板）
-    const { name } = fileMeta(url);
-    const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
-    const target = FileSystem.cacheDirectory + 'preview_' + Date.now() + '_' + safeName;
     try {
-      const { uri } = await FileSystem.downloadAsync(safeEncodeUrl(url), target);
+      const { uri } = await downloadBinaryToCache(rawUrl, 'preview_');
       await viewer.open(uri);
       return;
     } catch (e: any) {
@@ -217,6 +218,6 @@ export async function previewFile(rawUrl: string): Promise<void> {
       console.warn('[fileOpen] native preview failed, fallback share:', e?.message);
     }
   }
-  // 兜底：下载 + 系统分享/打开面板
+  // 无原生预览模块时兜底：下载 + 系统分享/打开面板
   await downloadAndShare(rawUrl);
 }
