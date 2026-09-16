@@ -533,7 +533,22 @@ function ChatDetailScreenInner() {
     requestFollow({ force: true });
   };
 
+  // [FIX] Web 端 onEndReached 不可靠，改用 onScroll 检测滚动到顶部触发 loadMore
   const handleScroll = (event: any) => {
+    // Web: detect scroll near top to trigger loadMoreMessages
+    if (Platform.OS === 'web' && event?.nativeEvent) {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      if (contentOffset && contentSize && layoutMeasurement) {
+        // For non-inverted list: near top means contentOffset.y is small
+        // For inverted list: near "top" (oldest messages) means contentOffset.y is near max
+        const maxOffset = contentSize.height - layoutMeasurement.height;
+        const nearTop = contentOffset.y < 100;
+        const nearBottom = contentOffset.y > maxOffset - 100;
+        if ((nearTop || nearBottom) && hasMore && !loadingMoreRef.current) {
+          loadMoreMessages();
+        }
+      }
+    }
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
     const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
     const near = distanceFromBottom < 120;
