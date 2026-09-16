@@ -363,7 +363,7 @@ const sanitizeVideoContent = (text: string): string => {
   // Remove **关于视频链接：** lines
   result = result.replace(/^[^\n]*\*\*关于视频链接[^\n]*/gm, '');
   // Remove emoji+bold status lines like ✅**xxx** or ️**xxx**
-  result = result.replace(/^[\s]*[✅⚠️📋🎬]*\s*\*\*[^*]+\*\*[^\n]*/gm, '');
+  result = result.replace(/^[\s]*[✅⚠️📋🎬]+\s*\*\*[^*]+\*\*[^\n]*/gm, '');
   // Remove --- separator lines
   result = result.replace(/^---+$/gm, '');
   // Remove empty ** lines
