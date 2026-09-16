@@ -67,6 +67,31 @@ export function openExternally(url: string) {
   return Linking.openURL(normalizeServerUrl(url)).catch(() => {});
 }
 
+// 非 ASCII（中文文件名等）做百分号编码；已编码的 %XX 不会被二次编码（encodeURI 保留 %）
+function safeEncodeUrl(u: string): string {
+  try {
+    return /[^\x00-\x7F]/.test(u) ? encodeURI(u) : u;
+  } catch {
+    return u;
+  }
+}
+
+// 兜底下载：主下载器（NSURLSession）对外域 CDN 偶发失败时，用 fetch（与图片/视频同一网络栈）
+// 拉取后以 base64 写入缓存。适合几十 MB 以内的文件（海螺视频通常 1~5MB）。
+async function fetchDownloadFallback(url: string, target: string): Promise<string> {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const blob: any = await resp.blob();
+  const base64: string = await new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => reject(new Error('read error'));
+    fr.readAsDataURL(blob);
+  });
+  await FileSystem.writeAsStringAsync(target, base64, { encoding: FileSystem.EncodingType.Base64 });
+  return target;
+}
+
 // 文件/视频/图片：App 内闭环下载，绝不跳外部浏览器。
 // 流程：下载到 App 缓存目录（带进度）→ expo-sharing 系统分享面板（iOS 可"存储到文件/视频"，
 // 全程停留在 App 上下文，不打开 Safari）；expo-sharing 不可用时兜底 React Native Share。
@@ -83,11 +108,13 @@ export async function downloadAndShare(
   // iOS / Android 统一：App 内下载 + 系统分享面板（不跳浏览器）
   const { name, info } = fileMeta(url);
   const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
-  const target = FileSystem.cacheDirectory + 'dl_' + safeName;
+  const target = FileSystem.cacheDirectory + 'dl_' + Date.now() + '_' + safeName;
+  const encUrl = safeEncodeUrl(url);
+  let uri = '';
   try {
     let lastEmit = 0;
     const downloadResumable = FileSystem.createDownloadResumable(
-      url,
+      encUrl,
       target,
       {},
       (dp) => {
@@ -101,8 +128,25 @@ export async function downloadAndShare(
         }
       }
     );
-    const result = await downloadResumable.downloadAsync();
-    const uri = (result as any)?.uri || target;
+    let result: any;
+    try {
+      result = await downloadResumable.downloadAsync();
+      uri = result?.uri || target;
+    } catch (primaryErr: any) {
+      // 主下载器对外域 CDN 偶发失败 → fetch 兜底（与播放器/图片同一网络栈）
+      console.warn('[fileOpen] primary download failed, try fetch fallback:', primaryErr?.message || primaryErr);
+      try {
+        uri = await fetchDownloadFallback(encUrl, target);
+      } catch (fbErr: any) {
+        throw new Error((primaryErr?.message || 'download error') + ' / fallback: ' + (fbErr?.message || fbErr));
+      }
+    }
+    if (!uri) uri = target;
+    // 校验文件确实落盘且非空
+    try {
+      const info2 = await FileSystem.getInfoAsync(uri, { size: true });
+      if (!info2.exists || !(info2 as any).size) throw new Error('empty file');
+    } catch (ve) { throw new Error('downloaded file invalid: ' + (ve as any)?.message); }
     onProgress?.(1);
     try {
       let handled = false;
@@ -128,7 +172,7 @@ export async function downloadAndShare(
   } catch (e: any) {
     const msg = e?.message || String(e);
     console.warn('[fileOpen] download/share failed:', msg);
-    Alert.alert('下载失败', '文件下载失败，请检查网络后重试。');
+    Alert.alert('下载失败', '文件下载失败，请重试。\n(' + String(msg).slice(0, 120) + ')');
   }
 }
 
@@ -163,9 +207,9 @@ export async function previewFile(rawUrl: string): Promise<void> {
     // 原生 QuickLook 路径：下载到缓存再用系统预览器打开（不弹分享面板）
     const { name } = fileMeta(url);
     const safeName = (name || 'file').replace(/[\\/:*?"<>|]+/g, '_');
-    const target = FileSystem.cacheDirectory + 'preview_' + safeName;
+    const target = FileSystem.cacheDirectory + 'preview_' + Date.now() + '_' + safeName;
     try {
-      const { uri } = await FileSystem.downloadAsync(url, target);
+      const { uri } = await FileSystem.downloadAsync(safeEncodeUrl(url), target);
       await viewer.open(uri);
       return;
     } catch (e: any) {

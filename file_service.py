@@ -221,6 +221,31 @@ class FileHandler(http.server.BaseHTTPRequestHandler):
 
         self._json(404, {"code": 404, "msg": "Not Found"})
 
+    def do_HEAD(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path_parts = parsed.path.strip("/").split("/")
+        if len(path_parts) == 4 and path_parts[0] == "api" and path_parts[1] == "files":
+            conv_id = urllib.parse.unquote(path_parts[2])
+            filename = urllib.parse.unquote(path_parts[3])
+            conv_dirs = get_conv_dirs(conv_id, create_plain=True)
+            filepath = None
+            if conv_dirs:
+                for d in conv_dirs:
+                    cand = d / filename
+                    if cand.exists() and cand.is_file() and cand.resolve().is_relative_to(d.resolve()):
+                        filepath = cand
+                        break
+            if filepath is None:
+                self._json(404, {"code": 404, "msg": "文件不存在"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(filepath.stat().st_size))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        self._json(404, {"code": 404, "msg": "Not Found"})
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
 

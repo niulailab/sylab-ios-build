@@ -814,11 +814,12 @@ function TableBlock(props: TableBlockProps) {
   const { startIdx, headers, dataRows, colW, totalW, scrollable, alignments,
     isDark, renderInline, plainHeaders, plainRows, borderColor, headerBg, hintColor } = props;
 
-  // 首帧保守高度估算：表头约 35px、每数据行约 31px、外边框 2px，保证初始绝不为 0
-  const estHeight = 35 + dataRows.length * 31 + 2;
+  // 首帧保守高度估算：表头约 37px、每数据行约 35px（单行文本 13px+上下padding 12+边框，给足冗余防裁切），
+  // 保证 FlatList 行回收重挂时滚动容器高度永不为 0。实测高度回来后用 max 只增不减，避免抖动。
+  const estHeight = 37 + dataRows.length * 35 + 2;
   const [measuredH, setMeasuredH] = React.useState<number>(estHeight);
 
-  const cellStyle = (ci: number, isHeaderCell: boolean) => ({
+  const cellStyle = (prefix: string, ci: number, isHeaderCell: boolean) => ({
     width: colW[ci],
     minWidth: colW[ci],
     flexShrink: 0,
@@ -829,11 +830,19 @@ function TableBlock(props: TableBlockProps) {
     borderRightColor: borderColor,
   });
 
-  const buildBody = (prefix: string) => (
-    <View key={`${prefix}-wrap`} style={{ borderWidth: 1, borderColor, borderRadius: BorderRadius.md, overflow: 'hidden', flexDirection: 'column', width: scrollable ? totalW : '100%' as any, flexShrink: 0 }}>
+  const buildBody = (prefix: string, measure: boolean) => (
+    <View
+      key={`${prefix}-wrap`}
+      onLayout={measure ? (e) => {
+        // 只构建一次 body，直接在真实可见内容上实测高度（不再用 opacity/absolute 隐藏层）
+        const h = Math.ceil(e.nativeEvent.layout.height);
+        if (h > 0) setMeasuredH((prev) => (Math.abs(h - prev) >= 2 ? Math.max(prev, h) : prev));
+      } : undefined}
+      style={{ borderWidth: 1, borderColor, borderRadius: BorderRadius.md, overflow: 'hidden', flexDirection: 'column', width: scrollable ? totalW : '100%' as any, flexShrink: 0 }}
+    >
       <View style={{ flexDirection: 'row', backgroundColor: headerBg, borderBottomWidth: 1, borderBottomColor: borderColor }}>
         {headers.map((cell, ci) => (
-          <View key={`${prefix}-th-${ci}`} style={cellStyle(ci, true)}>
+          <View key={`${prefix}-th-${ci}`} style={cellStyle(prefix, ci, true)}>
             <View style={{ flex: 1 }}>{renderInline(cell, `${prefix}-th-${ci}`)}</View>
           </View>
         ))}
@@ -841,7 +850,7 @@ function TableBlock(props: TableBlockProps) {
       {dataRows.map((row, ri) => (
         <View key={`${prefix}-tr-${ri}`} style={{ flexDirection: 'row', flexShrink: 0, borderBottomWidth: ri < dataRows.length - 1 ? 0.5 : 0, borderBottomColor: borderColor }}>
           {row.map((cell, ci) => (
-            <View key={`${prefix}-td-${ri}-${ci}`} style={cellStyle(ci, false)}>
+            <View key={`${prefix}-td-${ri}-${ci}`} style={cellStyle(prefix, ci, false)}>
               <View style={{ flex: 1 }}>{renderInline(cell, `${prefix}-td-${ri}-${ci}`)}</View>
             </View>
           ))}
@@ -857,7 +866,7 @@ function TableBlock(props: TableBlockProps) {
       </View>
       {Platform.OS === 'web' ? (
         <View style={{ width: '100%', maxWidth: '100%', minWidth: 0, flexShrink: 1, overflowX: 'auto' } as any}>
-          {buildBody('w' + startIdx)}
+          {buildBody('w' + startIdx, false)}
         </View>
       ) : scrollable ? (
         <>
@@ -870,23 +879,12 @@ function TableBlock(props: TableBlockProps) {
             style={{ width: '100%', height: measuredH }}
             contentContainerStyle={{ flexGrow: 0, flexShrink: 0, alignItems: 'flex-start' }}
           >
-            {buildBody('s' + startIdx)}
+            {buildBody('s' + startIdx, true)}
           </ScrollView>
-          {/* 隐藏测量层：实测真实内容高度后回写锁定，opacity:0 保留布局以获得真实高度 */}
-          <View
-            pointerEvents="none"
-            style={{ position: 'absolute', opacity: 0, left: 0, top: 0, width: totalW, height: undefined }}
-            onLayout={(e) => {
-              const h = Math.ceil(e.nativeEvent.layout.height);
-              if (h > 0 && Math.abs(h - measuredH) >= 2) setMeasuredH(h);
-            }}
-          >
-            {buildBody('m' + startIdx)}
-          </View>
           <Text style={{ fontSize: 11, color: hintColor, marginTop: 4, width: '100%', textAlign: 'right' }}>左右滑动查看更多列 ›</Text>
         </>
       ) : (
-        buildBody('n' + startIdx)
+        buildBody('n' + startIdx, false)
       )}
     </View>
   );
