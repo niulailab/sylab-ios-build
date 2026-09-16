@@ -690,9 +690,8 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
   const scrollable = totalW > availW + 48;
 
   const cellStyle = (ci: number, isHeader: boolean) => ({
-    width: scrollable ? colW[ci] : undefined,
-    flex: scrollable ? 0 : 1,
-    minWidth: scrollable ? colW[ci] : 0,
+    width: colW[ci],
+    minWidth: colW[ci],
     flexShrink: 0,
     paddingHorizontal: 10,
     paddingVertical: isHeader ? 8 : 6,
@@ -728,8 +727,7 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
   return {
     element: (
       <View key={`table-${startIdx}`} style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm, flexShrink: 0 }} className="md-table-scroll">
-        {tableBody}
-        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 4 }}>
           <TableCopyButton headers={plainHeaders} rows={plainRows} isDark={isDark} />
         </View>
         {Platform.OS === 'web' ? (
