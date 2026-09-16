@@ -548,6 +548,7 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
     width: scrollable ? colW[ci] : undefined,
     flex: scrollable ? 0 : 1,
     minWidth: scrollable ? colW[ci] : 0,
+    flexShrink: 0,
     paddingHorizontal: 10,
     paddingVertical: isHeader ? 8 : 6,
     alignItems: (alignments[ci] === 'center' ? 'center' : alignments[ci] === 'right' ? 'flex-end' : 'flex-start') as any,
@@ -556,11 +557,11 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
   });
 
   const tableBody = (
-    <View style={{ borderWidth: 1, borderColor, borderRadius: BorderRadius.md, overflow: 'hidden', flexDirection: 'column', width: scrollable ? totalW : '100%' as any, maxWidth: scrollable ? undefined : ('100%' as any), minWidth: 0 }}>
+    <View style={{ borderWidth: 1, borderColor, borderRadius: BorderRadius.md, overflow: 'hidden', flexDirection: 'column', width: scrollable ? totalW : '100%' as any, maxWidth: scrollable ? undefined : ('100%' as any), minWidth: scrollable ? totalW : 0, flexShrink: 0 }}>
       <View style={{ flexDirection: 'row', backgroundColor: headerBg, borderBottomWidth: 1, borderBottomColor: borderColor }}>
         {headers.map((cell, ci) => (
           <View key={`th-${ci}`} style={cellStyle(ci, true)}>
-            <Text selectable style={{ fontSize: FontSize.sm, fontWeight: '700', color: textColor, flexWrap: 'wrap', width: '100%' }}>{renderInline(cell, `th-${ci}`)}</Text>
+            <View style={{ flex: 1 }}>{renderInline(cell, `th-${ci}`)}</View>
           </View>
         ))}
       </View>
@@ -568,7 +569,7 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
         <View key={`tr-${ri}`} style={{ flexDirection: 'row', borderBottomWidth: ri < dataRows.length - 1 ? 0.5 : 0, borderBottomColor: borderColor }}>
           {row.map((cell, ci) => (
             <View key={`td-${ri}-${ci}`} style={cellStyle(ci, false)}>
-              <Text selectable style={{ fontSize: FontSize.sm, color: textColor, flexWrap: 'wrap', width: '100%' }}>{renderInline(cell, `td-${ri}-${ci}`)}</Text>
+              <View style={{ flex: 1 }}>{renderInline(cell, `td-${ri}-${ci}`)}</View>
             </View>
           ))}
         </View>
@@ -578,7 +579,7 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
 
   return {
     element: (
-      <View key={`table-${startIdx}`} style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm }} className="md-table-scroll">
+      <View key={`table-${startIdx}`} style={{ width: '100%', minWidth: 0, maxWidth: '100%', marginVertical: Spacing.sm, flexShrink: 0 }} className="md-table-scroll">
         {Platform.OS === 'web' ? (
           <View style={{ width: '100%', maxWidth: '100%', minWidth: 0, flexShrink: 1, overflowX: 'auto' } as any}>
             {tableBody}
@@ -591,6 +592,7 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
             alwaysBounceHorizontal={false}
             alwaysBounceVertical={false}
             style={{ width: '100%' }}
+            contentContainerStyle={{ flexGrow: 0, flexShrink: 0, alignItems: 'flex-start' }}
           >
             {tableBody}
           </ScrollView>
