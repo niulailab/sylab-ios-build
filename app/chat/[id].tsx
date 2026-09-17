@@ -1585,6 +1585,13 @@ function ChatDetailScreenInner() {
           <EmptyState iconName="chatbubbles" title={`和 ${botName} 开始对话`} subtitle="输入消息开始聊天" />
         </View>
       ) : (
+        // FIX 2026-09-17 滚动狂跳：向上分页是头部插入老消息。不做位置保持时 FlatList
+        // 默认锚定顶部 index，可视内容被整体下推，回底过程中反复命中顶部、触发 loadMore
+        // 后再跳，形成狂跳循环。maintainVisibleContentPosition 锚定首个可见行，头部插入时
+        // 自动补偿偏移、视口不动；autoscrollToTopThreshold 为 null 禁止自动滚顶。
+        // RN0.76 iOS/Android 原生支持，web 端自动忽略该属性。
+        // onEndReached 是到底部(最新消息)才触发，方向相反会在流式时打乱页码，故禁用，
+        // 三端统一靠 onScroll 检测滚动到顶部来加载老消息。
         <FlatList
           style={{ flex: 1 }}
           ref={flatListRef}
@@ -1603,10 +1610,14 @@ function ChatDetailScreenInner() {
               <Text style={{ fontSize: 12, color: Colors.textTertiary }}>没有更多消息了</Text>
             </View>
           ) : null}
-          onEndReached={Platform.OS === 'web' ? undefined : loadMoreMessages}
-          onEndReachedThreshold={Platform.OS === 'web' ? 0 : 0.3}
+          onEndReached={undefined}
+          onEndReachedThreshold={0}
           showsVerticalScrollIndicator={false}
           inverted={false}
+          maintainVisibleContentPosition={{
+            minIndexForVisible: 0,
+            autoscrollToTopThreshold: null,
+          }}
           extraData={videoTasks}
           onScroll={handleScroll}
           onContentSizeChange={() => {

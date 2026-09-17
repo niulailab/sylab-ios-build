@@ -252,16 +252,25 @@ function highlightCode(code: string, lang: string, isDark: boolean, keyPrefix: s
   
   // Build regex parts
   const isPy = (lang === 'python' || lang === 'py');
-  const commentPart = isPy ? '(#[^\n]*)' : '(//[^\n]*|/\*[\s\S]*?\*/)';
+  // [FIX 2026-09-17] Double-escape backslashes inside the JS string literal:
+  // \* \s \S were swallowed by string escaping, producing '/*' -> invalid regex
+  // 'Quantifier has nothing to repeat' for every non-python code fence (even empty lang).
+  const commentPart = isPy ? '(#[^\\n]*)' : '(//[^\\n]*|/\\*[\\s\\S]*?\\*/)';
   const stringPart = '("(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)';
   const keywordPart = '(\\b(?:' + keywords + ')\\b)';
   const numberPart = '(\\b\\d+\\.?\\d*\\b)';
   const funcPart = '(\\b[a-zA-Z_]\\w*\\b)\\s*(?=\\()';
 
-  const tokenPattern = new RegExp(
-    commentPart + '|' + stringPart + '|' + keywordPart + '|' + numberPart + '|' + funcPart,
-    'g'
-  );
+  // [FIX 2026-09-17] Guard regex build; on any failure fall back to plain text, never crash page.
+  let tokenPattern: RegExp | null = null;
+  try {
+    tokenPattern = new RegExp(
+      commentPart + '|' + stringPart + '|' + keywordPart + '|' + numberPart + '|' + funcPart,
+      'g'
+    );
+  } catch (e) {
+    return [<Text key={keyPrefix + '-raw'} style={{ color: defaultColor }}>{code}</Text>];
+  }
 
   let lastIndex = 0;
   let match;
