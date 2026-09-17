@@ -877,7 +877,7 @@ function TableBlock(props: TableBlockProps) {
             alwaysBounceHorizontal={false}
             alwaysBounceVertical={false}
             style={{ width: '100%', height: measuredH }}
-            contentContainerStyle={{ flexGrow: 0, flexShrink: 0, alignItems: 'flex-start' }}
+            contentContainerStyle={{ width: totalW, flexGrow: 0, flexShrink: 0, alignItems: 'flex-start' }}
           >
             {buildBody('s' + startIdx, true)}
           </ScrollView>
