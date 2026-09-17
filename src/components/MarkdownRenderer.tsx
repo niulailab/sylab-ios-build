@@ -777,6 +777,7 @@ function renderTable(headerLine: string, lines: string[], startIdx: number, ctx:
           scrollable={scrollable}
           alignments={alignments}
           isDark={isDark}
+          textColor={textColor}
           renderInline={renderInline}
           plainHeaders={plainHeaders}
           plainRows={plainRows}
@@ -802,6 +803,7 @@ interface TableBlockProps {
   scrollable: boolean;
   alignments: ('left' | 'center' | 'right')[];
   isDark: boolean;
+  textColor: string;
   renderInline: (text: string, key: string) => React.ReactNode;
   plainHeaders: string[];
   plainRows: string[][];
@@ -812,7 +814,7 @@ interface TableBlockProps {
 
 function TableBlock(props: TableBlockProps) {
   const { startIdx, headers, dataRows, colW, totalW, scrollable, alignments,
-    isDark, renderInline, plainHeaders, plainRows, borderColor, headerBg, hintColor } = props;
+    isDark, textColor, renderInline, plainHeaders, plainRows, borderColor, headerBg, hintColor } = props;
 
   // 首帧保守高度估算：表头约 37px、每数据行约 35px（单行文本 13px+上下padding 12+边框，给足冗余防裁切），
   // 保证 FlatList 行回收重挂时滚动容器高度永不为 0。实测高度回来后用 max 只增不减，避免抖动。
