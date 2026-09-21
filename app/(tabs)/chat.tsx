@@ -152,6 +152,10 @@ export default function ChatListScreen() {
   const [searchText, setSearchText] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [activeConvIds, setActiveConvIds] = useState<string[]>([]);
+  const [convPage, setConvPage] = useState(1);
+  const [convHasMore, setConvHasMore] = useState(true);
+  const [loadingMoreConv, setLoadingMoreConv] = useState(false);
+  const loadingMoreConvRef = useRef(false);
 
   useEffect(() => {
     const syncActive = () => setActiveConvIds(queueManager.getActiveConversationIds());
@@ -175,6 +179,37 @@ export default function ChatListScreen() {
     }
   };
 
+  const enrichConv = async (conv: any): Promise<EnrichedConversation | null> => {
+    let displayTitle = conv.name || '';
+    let lastMessagePreview = '';
+    let msgCount = 0;
+    try {
+      const msgPromise = chatApi.getMessages(conv.id);
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000));
+      const msgResult = await Promise.race([msgPromise, timeoutPromise]);
+      const msgs = (msgResult as any).items || [];
+      msgCount = msgs.length;
+      if (msgs.length > 0) {
+        const latestMsg = msgs[0];
+        lastMessagePreview = stripMarkdown(latestMsg.content || '');
+        if (!displayTitle) {
+          const firstUserMsg = [...msgs].reverse().find((m: any) => m.role === 'user');
+          if (firstUserMsg?.content) {
+            displayTitle = stripMarkdown(firstUserMsg.content).slice(0, 40);
+          }
+        }
+      }
+    } catch (e) {
+      // timeout or error - still show conversation without preview
+    }
+    if (msgCount === 0 && !conv.name) return null;
+    return {
+      ...conv,
+      displayTitle: displayTitle || DEFAULT_BOT_NAME,
+      lastMessagePreview: lastMessagePreview || '暂无消息',
+    };
+  };
+
   const fetchConversations = async () => {
     try {
       const currentUser = useAuthStore.getState().user;
@@ -184,57 +219,57 @@ export default function ChatListScreen() {
       const result = await chatApi.listConversations(DEFAULT_BOT_ID, listParams);
       const rawConvs = result.items || [];
 
-      // Show all conversations from backend (some old convos have empty user_id)
-      const filteredConvs = rawConvs;
-
-      if (filteredConvs.length === 0) {
+      if (rawConvs.length === 0) {
         setConversations([]);
+        setConvHasMore(false);
         setLoading(false);
         return;
       }
+      setConvHasMore(rawConvs.length >= 50);
 
-      const enriched: EnrichedConversation[] = [];
-      // Parallel fetch with 5s timeout per conversation
-      const fetchConvPreview = async (conv: any): Promise<EnrichedConversation | null> => {
-        let displayTitle = conv.name || '';
-        let lastMessagePreview = '';
-        let msgCount = 0;
-        try {
-          const msgPromise = chatApi.getMessages(conv.id);
-          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000));
-          const msgResult = await Promise.race([msgPromise, timeoutPromise]);
-          const msgs = (msgResult as any).items || [];
-          msgCount = msgs.length;
-          if (msgs.length > 0) {
-            const latestMsg = msgs[0];
-            lastMessagePreview = stripMarkdown(latestMsg.content || '');
-            if (!displayTitle) {
-              const firstUserMsg = [...msgs].reverse().find((m: any) => m.role === 'user');
-              if (firstUserMsg?.content) {
-                displayTitle = stripMarkdown(firstUserMsg.content).slice(0, 40);
-              }
-            }
-          }
-        } catch (e) {
-          // timeout or error - still show conversation without preview
-        }
-        if (msgCount === 0 && !conv.name) return null;
-        return {
-          ...conv,
-          displayTitle: displayTitle || DEFAULT_BOT_NAME,
-          lastMessagePreview: lastMessagePreview || '暂无消息',
-        };
-      };
-
-      const results = await Promise.all(filteredConvs.map(fetchConvPreview));
+      const results = await Promise.all(rawConvs.map(enrichConv));
       const valid = results.filter(Boolean) as EnrichedConversation[];
       setConversations(valid);
+      setConvPage(1);
     } catch (e) {
       console.warn('[ChatList] fetchConversations error:', e);
       setConversations([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  };
+
+  const loadMoreConversations = async () => {
+    if (loadingMoreConvRef.current || !convHasMore) return;
+    loadingMoreConvRef.current = true;
+    setLoadingMoreConv(true);
+    try {
+      const currentUser = useAuthStore.getState().user;
+      const currentUserId = currentUser?.id || '';
+      const nextPage = convPage + 1;
+      const listParams: any = { page_num: nextPage, page_size: 50 };
+      if (currentUserId) listParams.user_id = currentUserId;
+      const result = await chatApi.listConversations(DEFAULT_BOT_ID, listParams);
+      const rawConvs = result.items || [];
+      if (rawConvs.length === 0) {
+        setConvHasMore(false);
+      } else {
+        const results = await Promise.all(rawConvs.map(enrichConv));
+        const valid = results.filter(Boolean) as EnrichedConversation[];
+        setConversations(prev => {
+          const existingIds = new Set(prev.map(c => String(c.id)));
+          const fresh = valid.filter(c => !existingIds.has(String(c.id)));
+          return [...prev, ...fresh];
+        });
+        setConvPage(nextPage);
+        if (rawConvs.length < 50) setConvHasMore(false);
+      }
+    } catch (e) {
+      console.warn('[ChatList] loadMoreConversations error:', e);
+    } finally {
+      loadingMoreConvRef.current = false;
+      setLoadingMoreConv(false);
     }
   };
 
@@ -387,6 +422,17 @@ export default function ChatListScreen() {
           renderItem={renderConversation}
           keyExtractor={(item) => item.id}
           showsVerticalScrollIndicator={false}
+          onEndReached={loadMoreConversations}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={loadingMoreConv ? (
+            <View style={{ padding: 16, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={Colors.primary} />
+            </View>
+          ) : !convHasMore && conversations.length > 0 ? (
+            <View style={{ padding: 16, alignItems: 'center' }}>
+              <Text style={{ fontSize: 12, color: Colors.textTertiary }}>没有更多会话了</Text>
+            </View>
+          ) : null}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchConversations(); }} tintColor={Colors.primary} />}
         />
       )}
