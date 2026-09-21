@@ -1,4 +1,3 @@
-import { RUNTIME_BASE } from '../config/runtime';
 /**
  * queueTaskManager.ts
  * 全局聊天队列任务管理器（模块级单例，生命周期独立于聊天页组件）。
@@ -285,20 +284,37 @@ class QueueTaskManagerImpl {
     const conn = chatQueueApi.connectStream(
       task.taskId,
       {
-        onDelta: (text) => {
+        onDelta: (text, messageId) => {
           // 去重闸门：同一帧 onEventIndex 先于 onDelta 到达
           if (frameIdx >= 0 && task.seenIndexes.has(frameIdx)) return;
           if (frameIdx >= 0) task.seenIndexes.add(frameIdx);
           const clean = stripEmoji(text);
+          // 如果 messageId 变化，说明进入了新一轮，先 commit 当前轮次
+          const store = useChatStore.getState();
+          if (messageId && store.streamingMessageId && store.streamingMessageId !== messageId && store.streamingContent) {
+            this.commitStreamingMessage(task, store.streamingMessageId, store.streamingContent);
+          }
           task.content += clean;
           task.status = '正在输入回复…';
           if (this.isAttached(task)) {
-            useChatStore.getState().appendDelta(clean);
+            useChatStore.getState().appendDelta(clean, messageId);
           }
           this.schedulePersist(task);
         },
         onToolCall: (name, args, result) => {
           this.handleToolEvent(task, name, args, result);
+        },
+        onIntermediateComplete: (messageId, content) => {
+          // 中间轮次结束：将当前流式消息固化到 messages 列表，清空 streaming 状态准备下一轮
+          if (this.isAttached(task)) {
+            const store = useChatStore.getState();
+            const fullContent = store.streamingContent || content || '';
+            if (fullContent) {
+              this.commitStreamingMessage(task, messageId, fullContent);
+            }
+          }
+          // 重置 task.content 以便下一轮重新累积
+          task.content = '';
         },
         onComplete: (chatId, convId) => {
           task.streamConn = null;
@@ -368,6 +384,39 @@ class QueueTaskManagerImpl {
     emit(AppEvents.CHAT_TASK_UPDATED);
   }
 
+  /** 将当前 streaming 气泡固化为历史消息（用于多轮中间轮次分隔） */
+  private commitStreamingMessage(task: QueueTask, messageId: string, content: string) {
+    if (!content || !this.isAttached(task)) return;
+    const store = useChatStore.getState();
+    const msgId = messageId || store.streamingMessageId || `msg_intermediate_${Date.now()}`;
+    const cur = store.messages;
+    // 避免重复添加
+    if (!cur.some(m => m.id === msgId)) {
+      const aiMsg: any = {
+        id: msgId,
+        conversation_id: task.conversationId,
+        role: 'assistant',
+        type: 'text',
+        content: stripEmoji(content),
+        content_type: 'markdown',
+        created_at: String(Date.now()),
+        updated_at: String(Date.now()),
+      };
+      const savedToolCalls = store.toolCalls;
+      if (savedToolCalls.length > 0) {
+        aiMsg.tool_calls = savedToolCalls.map((tc) => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: tc.arguments || '{}' },
+        }));
+      }
+      useChatStore.getState().setMessages([...cur, aiMsg]);
+    }
+    // 清空 streaming 状态，为下一轮腾出空间
+    useChatStore.getState().startStreaming();
+    task.tools = [];
+  }
+
   private async backfill(task: QueueTask, since: number) {
     try {
       const { events } = await chatQueueApi.getEvents(task.taskId, since);
@@ -380,7 +429,7 @@ class QueueTaskManagerImpl {
           task.content += clean;
           task.status = '正在输入回复…';
           if (this.isAttached(task)) {
-            useChatStore.getState().appendDelta(clean);
+            useChatStore.getState().appendDelta(clean, ev.data?.id);
           }
         } else if (ev.event_type === 'conversation.message.completed') {
           const data = ev.data || {};
@@ -394,6 +443,14 @@ class QueueTaskManagerImpl {
               const fn = tc.function || tc;
               if (fn?.name) this.handleToolEvent(task, fn.name, fn.arguments || '');
             } catch (e) {}
+          } else if (data.type === 'answer' && data.id) {
+            // 中间轮次完成：commit 当前 streaming 气泡
+            const store = useChatStore.getState();
+            const fullContent = store.streamingContent || '';
+            if (fullContent) {
+              this.commitStreamingMessage(task, data.id, fullContent);
+            }
+            task.content = '';
           }
         }
       }
@@ -587,7 +644,7 @@ class QueueTaskManagerImpl {
         const pending = getPendingFiles();
         if (pending.length > 0) {
           for (const pf of pending) {
-            fetch(`${RUNTIME_BASE}/project-files/api/files/upload`, {
+            fetch('https://s.symsgf.xyz/project-files/api/files/upload', {
               method: 'POST',
               headers: {
                 'X-Conversation-Id': convId,
@@ -725,7 +782,7 @@ class QueueTaskManagerImpl {
 
     const poll = async () => {
       try {
-        const resp = await fetch(`${RUNTIME_BASE}/video/status/` + taskId);
+        const resp = await fetch('https://s.symsgf.xyz/video/status/' + taskId);
         const data = await resp.json();
         const parsed = typeof data.data === 'string' ? JSON.parse(data.data || '{}') : data.data || data;
         const status = parsed.status || 'unknown';

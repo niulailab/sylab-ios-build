@@ -33,7 +33,7 @@ interface ChatState {
 
   setMessages: (messages: ChatMessage[]) => void;
   startStreaming: () => void;
-  appendDelta: (delta: string) => void;
+  appendDelta: (delta: string, messageId?: string) => void;
   appendToolCall: (name: string, args: string, result?: string) => void;
   finishStreaming: (messageId: string) => void;
   clearStreaming: () => void;
@@ -65,8 +65,9 @@ export const useChatStore = create<ChatState>((set) => ({
     generatingType: null,
   }),
 
-  appendDelta: (delta) => set((state) => ({
+  appendDelta: (delta, messageId?) => set((state) => ({
     streamingContent: state.streamingContent + delta,
+    streamingMessageId: state.streamingMessageId || messageId || `msg_${Date.now()}`,
     activityStatus: state.generatingType ? state.activityStatus : '正在输入回复…',
   })),
 

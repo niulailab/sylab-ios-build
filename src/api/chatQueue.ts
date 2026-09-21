@@ -8,8 +8,7 @@
  * XHR.onprogress 在 iOS 原生 / Android 原生 / web PWA 三端都能分块推送。
  */
 
-import { RUNTIME_BASE } from '../config/runtime';
-const QUEUE_BASE = `${RUNTIME_BASE}/chat-queue`;
+const QUEUE_BASE = 'https://s.symsgf.xyz/chat-queue';
 
 export interface QueueSubmitRequest {
   bot_id: string;
@@ -96,9 +95,10 @@ export const chatQueueApi = {
    * iOS/Android 原生 RN 下 fetch.body.getReader() 不流式，必须用 XHR.onprogress。
    */
   connectStream: (taskId: string, callbacks: {
-    onDelta: (text: string) => void;
+    onDelta: (text: string, messageId?: string) => void;
     onToolCall?: (name: string, args: string, result?: string) => void;
     onComplete: (chatId: string, conversationId: string) => void;
+    onIntermediateComplete?: (messageId: string, content: string) => void;
     onError: (error: Error) => void;
     onEventIndex?: (index: number) => void;
   }, since: number = 0): { abort: () => void } => {
@@ -113,10 +113,10 @@ export const chatQueueApi = {
       if (idleWatchdog) clearTimeout(idleWatchdog);
       idleWatchdog = setTimeout(() => {
         if (aborted || completed) return;
-        console.warn('[ChatQueue] idle 300s, aborting for reconnect');
+        console.warn('[ChatQueue] idle 90s, aborting for reconnect');
         try { xhr?.abort(); } catch (e) {}
         // abort 后由 onabort 走 onError → manager 退避重连 + backfill 补帧
-      }, 300000);
+      }, 90000);
     };
 
     const fail = (err: Error) => {
@@ -178,7 +178,7 @@ export const chatQueueApi = {
               const data = isEnvelope ? parsed.data : parsed;
               if (isEnvelope && typeof parsed.index === 'number') callbacks.onEventIndex?.(parsed.index);
               if (evType === 'conversation.message.delta' && data.content) {
-                callbacks.onDelta(data.content);
+                callbacks.onDelta(data.content, data.id);
               } else if (evType === 'conversation.message.completed') {
                 if (data.type === 'function_call') {
                   try {
@@ -190,6 +190,9 @@ export const chatQueueApi = {
                 } else if (data.type === 'tool_response') {
                   const toolName = data.meta_data?.tool_name || '';
                   callbacks.onToolCall?.(toolName, '', data.content);
+                } else if (data.type === 'answer' && data.id) {
+                  // 中间轮次完成：通知上层 finalize 当前消息气泡，为下一轮腾出空间
+                  callbacks.onIntermediateComplete?.(data.id, data.content || '');
                 }
               } else if (evType === 'conversation.chat.completed') {
                 completed = true;
