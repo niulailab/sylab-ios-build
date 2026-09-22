@@ -264,7 +264,31 @@ export const MessageBubble = React.memo<MessageBubbleProps>(({ message, isDark, 
         isUser ? styles.userBubble : styles.assistantBubble,
         { backgroundColor: bubbleBg },
       ]}>
-        {message.content_type === 'image_url' && message.content ? (() => {
+        {message.content_type === 'object_string' && message.content ? (() => {
+          try {
+            const blocks = JSON.parse(message.content);
+            if (Array.isArray(blocks)) {
+              return (
+                <View>
+                  {blocks.map((block: any, idx: number) => {
+                    if (block.type === 'image' && block.file_url) {
+                      return (
+                        <Image key={idx} source={{ uri: normalizeImageUrl(block.file_url) }} style={styles.messageImage} />
+                      );
+                    }
+                    if (block.type === 'text' && block.text) {
+                      return (
+                        <MarkdownRenderer key={idx} content={block.text} isDark={isDark} />
+                      );
+                    }
+                    return null;
+                  })}
+                </View>
+              );
+            }
+          } catch (_) {}
+          return <MarkdownRenderer content={message.content} isDark={isDark} />;
+        })() : message.content_type === 'image_url' && message.content ? (() => {
           const _c = message.content || '';
           const _imgMatch = _c.match(/^\[IMG:([^\]]+)\](.*)$/s);
           const _imgUrl = _imgMatch ? _imgMatch[1] : _c;
