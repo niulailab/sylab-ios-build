@@ -127,6 +127,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // ========== Voice Recording Functions ==========
   const startRecording = async () => {
     try {
+      // Clean up any stale recording object that may not have been properly unloaded
+      if (recordingRef.current) {
+        try {
+          await recordingRef.current.stopAndUnloadAsync();
+        } catch (_) {}
+        recordingRef.current = null;
+      }
       const perm = await Audio.requestPermissionsAsync();
       if (!perm.granted) {
         Alert.alert('\u9700\u8981\u6743\u9650', '\u8bf7\u5728\u8bbe\u7f6e\u4e2d\u5141\u8bb8\u8bbf\u95ee\u9ea6\u514b\u98ce');
@@ -159,10 +166,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         recordingTimerRef.current = null;
       }
       setIsRecording(false);
-      await recordingRef.current.stopAndUnloadAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
-      const uri = recordingRef.current.getURI();
+      const rec = recordingRef.current;
+      const uri = rec.getURI(); // must call BEFORE stopAndUnloadAsync
+      try { await rec.stopAndUnloadAsync(); } catch (_) {}
       recordingRef.current = null;
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
       if (!uri) return;
 
       // Upload audio to ASR endpoint
