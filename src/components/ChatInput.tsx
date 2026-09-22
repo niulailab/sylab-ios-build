@@ -136,16 +136,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
-      const { recording, status } = await Audio.Recording.createAsync(
+      const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
-      // iOS requires prepareToRecordAsync after createAsync to actually start capturing
-      await recording.prepareToRecordAsync();
-      // Verify recording is actually recording
-      if (!status.isRecording && !status.isDoneRecording) {
-        console.warn('[ChatInput] Recording created but not in recording state, retrying...');
-        await new Promise(r => setTimeout(r, 100));
-      }
       recordingRef.current = recording;
       setIsRecording(true);
       setRecordingDuration(0);
