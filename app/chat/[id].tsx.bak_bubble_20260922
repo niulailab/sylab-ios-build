@@ -1444,12 +1444,10 @@ function ChatDetailScreenInner() {
 
   const renderItem = ({ item }: { item: ChatMessage }) => {
     if (!item || !item.id) return null;
-    // Filter empty/partial messages (both user and assistant)
-    const _raw = (item.content || '').trim();
-    if (!_raw) return null;
+    if (item.role === 'assistant' && (!item.content || !item.content.trim())) return null;
+    // Filter out stale empty/partial AI messages from failed requests (only whitespace, newlines, or emoji)
     if (item.role === 'assistant') {
-      // Also filter stale AI messages that are only whitespace, newlines, or emoji
-      const _clean = _raw.replace(/[\u00a0\u200b\ufeff]/g, '').replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE0F}\u{200D}]/gu, '');
+      const _clean = (item.content || '').replace(/[\s\u00a0\u200b\ufeff]/g, '').replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE0F}\u{200D}]/gu, '');
       if (_clean.length === 0) return null;
     }
     const isFailed = failedMessages.has(item.id);

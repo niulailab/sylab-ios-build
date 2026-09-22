@@ -134,7 +134,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       }
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
+        playsInNitroIOS: true,
       });
       const { recording, status } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
@@ -167,7 +167,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       }
       setIsRecording(false);
       await recordingRef.current.stopAndUnloadAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
       const uri = recordingRef.current.getURI();
       recordingRef.current = null;
       if (!uri) return;
