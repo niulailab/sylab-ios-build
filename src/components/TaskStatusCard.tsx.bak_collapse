@@ -88,7 +88,6 @@ function fmtElapsed(sec: number): string {
 
 export const TaskStatusCard: React.FC<TaskStatusCardProps> = ({ status, tools, botName, isDark }) => {
   const [elapsed, setElapsed] = useState(0);
-  const [collapsed, setCollapsed] = useState(true); // 工具步骤列表默认折叠
   const startRef = useRef<number>(Date.now());
   const pulse = useRef(new Animated.Value(1)).current;
 
@@ -155,39 +154,27 @@ export const TaskStatusCard: React.FC<TaskStatusCardProps> = ({ status, tools, b
           </Text>
         </View>
 
-        {/* 工具步骤列表（可折叠） */}
+        {/* 工具步骤列表 */}
         {tools.length > 0 && (
-          <>
-            <View style={{ marginTop: 8, gap: 5 }}>
-              {(collapsed ? tools.slice(0, 5) : tools).map((t) => {
-                const meta = getToolMeta(t.name);
-                return (
-                  <View key={t.id} style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {t.done ? (
-                      <Ionicons name="checkmark-circle" size={14} color={Colors.success} style={{ marginRight: 6 }} />
-                    ) : (
-                      <Animated.View style={{ opacity: pulse, marginRight: 6 }}>
-                        <Ionicons name={meta.icon as any} size={14} color={meta.color} />
-                      </Animated.View>
-                    )}
-                    <Text style={{ fontSize: 13, color: t.done ? (isDark ? '#94a3b8' : '#9ca3af') : (isDark ? '#cbd5e1' : '#4b5563') }}>
-                      {t.done ? `${t.label}完成` : `正在${t.label}…`}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-            {tools.length > 5 && (
-              <View style={{ marginTop: 4 }}>
-                <Text
-                  onPress={() => setCollapsed(!collapsed)}
-                  style={{ fontSize: 12, color: '#3b82f6', fontWeight: '600' }}
-                >
-                  {collapsed ? `展开全部 ${tools.length} 个步骤 ` : '收起 ▴'}
-                </Text>
-              </View>
-            )}
-          </>
+          <View style={{ marginTop: 8, gap: 5 }}>
+            {tools.map((t) => {
+              const meta = getToolMeta(t.name);
+              return (
+                <View key={t.id} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  {t.done ? (
+                    <Ionicons name="checkmark-circle" size={14} color={Colors.success} style={{ marginRight: 6 }} />
+                  ) : (
+                    <Animated.View style={{ opacity: pulse, marginRight: 6 }}>
+                      <Ionicons name={meta.icon as any} size={14} color={meta.color} />
+                    </Animated.View>
+                  )}
+                  <Text style={{ fontSize: 13, color: t.done ? (isDark ? '#94a3b8' : '#9ca3af') : (isDark ? '#cbd5e1' : '#4b5563') }}>
+                    {t.done ? `${t.label}完成` : `正在${t.label}…`}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
         )}
 
         {/* 长任务提示 */}

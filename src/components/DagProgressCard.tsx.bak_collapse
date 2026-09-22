@@ -71,7 +71,6 @@ const STATUS_META: Record<string, { icon: string; color: string; label: string }
 export const DagProgressCard: React.FC<DagProgressCardProps> = ({ conversationId, isDark }) => {
   const [wf, setWf] = useState<DagWorkflow | null>(null);
   const [dismissed, setDismissed] = useState(false);
-  const [collapsed, setCollapsed] = useState(true); // 子任务列表默认折叠
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef<number>(0);
   const completedAtRef = useRef<number>(0);
@@ -213,9 +212,9 @@ export const DagProgressCard: React.FC<DagProgressCardProps> = ({ conversationId
           </Text>
         </View>
 
-        {/* 子任务步骤（可折叠） */}
+        {/* 子任务步骤 */}
         <View style={{ marginTop: 8, gap: 5 }}>
-          {(wf.nodes || []).slice(0, collapsed ? 5 : undefined).map((n) => {
+          {(wf.nodes || []).map((n) => {
             const meta = STATUS_META[n.status] || STATUS_META.pending;
             const isRunning = n.status === 'running';
             return (
@@ -235,17 +234,6 @@ export const DagProgressCard: React.FC<DagProgressCardProps> = ({ conversationId
             );
           })}
         </View>
-        {/* 展开/收起按钮 */}
-        {((wf.nodes || []).length > 5) && (
-          <View style={{ marginTop: 4 }}>
-            <Text
-              onPress={() => setCollapsed(!collapsed)}
-              style={{ fontSize: 12, color: '#3b82f6', fontWeight: '600' }}
-            >
-              {collapsed ? `展开全部 ${wf.nodes.length} 个子任务 ` : '收起 ▴'}
-            </Text>
-          </View>
-        )}
 
         {/* 长任务提示 */}
         {active && (
