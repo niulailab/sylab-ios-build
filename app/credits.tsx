@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Alert, Modal, TextInput, Platform, Linking } from "react-native";
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Alert, Modal, TextInput, Platform, Linking, Image } from "react-native";
 import { SafeAlert } from "../src/utils/safeAlert";
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -40,6 +40,10 @@ export default function CreditsScreen() {
   const [payType, setPayType] = useState<'alipay' | 'wxpay'>('alipay');
   const [paying, setPaying] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // QR 码支付弹窗
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrData, setQrData] = useState<{ qr_base64: string; money: string; credits: string; out_trade_no: string } | null>(null);
 
   // 卡密兑换
   const [showRedeemModal, setShowRedeemModal] = useState(false);
@@ -105,6 +109,8 @@ export default function CreditsScreen() {
         if (r.paid) {
           if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
           setShowRechargeModal(false);
+          setShowQrModal(false);
+          setQrData(null);
           setPaying(false);
           SafeAlert.alert('充值成功', '积分已到账，感谢支持！');
           fetchData();
@@ -135,24 +141,31 @@ export default function CreditsScreen() {
     if (!user?.id) return;
     setPaying(true);
     try {
-      const res = await creditsApi.createPay(user.id, selectedPlan, payType);
-      if (res.pay_url) {
-        // 打开支付页（web 新标签；原生用 Linking 拉起）
-        if (Platform.OS === 'web') {
-          window.open(res.pay_url, '_blank');
-        } else {
-          await Linking.openURL(res.pay_url);
-        }
+      const res = await creditsApi.getPayQrCode(user.id, selectedPlan, payType);
+      if (res.qr_base64) {
+        setQrData({
+          qr_base64: res.qr_base64,
+          money: res.money,
+          credits: res.credits,
+          out_trade_no: res.out_trade_no,
+        });
+        setShowQrModal(true);
+        setPaying(false);
         startPolling(res.out_trade_no);
-        SafeAlert.alert('请完成支付', '已打开支付页面，完成付款后积分将自动到账。');
       } else {
-        SafeAlert.alert('下单失败', res.message || '请稍后重试');
+        SafeAlert.alert('下单失败', '二维码获取失败，请重试');
         setPaying(false);
       }
     } catch (error: any) {
       SafeAlert.alert('下单失败', error.response?.data?.detail || error.message || '网络错误');
       setPaying(false);
     }
+  };
+
+  const closeQrModal = () => {
+    setShowQrModal(false);
+    setQrData(null);
+    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
   };
 
   const loadMore = async () => {
@@ -452,6 +465,39 @@ export default function CreditsScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* QR 码支付弹窗 */}
+      <Modal visible={showQrModal} transparent animationType="fade">
+        <View style={styles.qrModalOverlay}>
+          <View style={styles.qrModalContent}>
+            <Text style={styles.qrModalTitle}>{payType === 'alipay' ? '支付宝' : '微信'}扫码支付</Text>
+            <Text style={styles.qrModalAmount}>¥{qrData?.money || '0'}</Text>
+            <Text style={styles.qrModalCredits}>可获 {Number(qrData?.credits || 0).toLocaleString()} 积分</Text>
+
+            <View style={styles.qrImageWrap}>
+              {qrData?.qr_base64 ? (
+                <Image
+                  source={{ uri: qrData.qr_base64 }}
+                  style={styles.qrImage}
+                  resizeMode="contain"
+                />
+              ) : (
+                <ActivityIndicator size="large" color={Colors.primary} />
+              )}
+            </View>
+
+            <Text style={styles.qrHint}>
+              {payType === 'alipay'
+                ? '请打开支付宝 APP → 扫一扫 → 扫描上方二维码'
+                : '请打开微信 APP → 扫一扫 → 扫描上方二维码'}
+            </Text>
+
+            <TouchableOpacity style={styles.qrCancelBtn} onPress={closeQrModal}>
+              <Text style={styles.qrCancelText}>取消支付</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -580,4 +626,28 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center',
   },
   modalConfirmText: { fontSize: FontSize.md, color: '#fff', fontWeight: '600' },
+
+  // QR Modal
+  qrModalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: Spacing.lg,
+  },
+  qrModalContent: {
+    backgroundColor: '#fff', borderRadius: BorderRadius.lg, padding: Spacing.lg,
+    width: '100%', maxWidth: 340, alignItems: 'center',
+  },
+  qrModalTitle: { fontSize: FontSize.lg, fontWeight: '700', color: Colors.text },
+  qrModalAmount: { fontSize: 32, fontWeight: '800', color: Colors.primary, marginTop: 4 },
+  qrModalCredits: { fontSize: FontSize.sm, color: Colors.textSecondary, marginTop: 2, marginBottom: 12 },
+  qrImageWrap: {
+    width: 200, height: 200, backgroundColor: '#fff', borderRadius: BorderRadius.md,
+    borderWidth: 1, borderColor: Colors.borderLight, justifyContent: 'center', alignItems: 'center',
+    padding: 8,
+  },
+  qrImage: { width: 180, height: 180 },
+  qrHint: { fontSize: FontSize.xs, color: Colors.textSecondary, textAlign: 'center', marginTop: 12, lineHeight: 18 },
+  qrCancelBtn: {
+    marginTop: 16, paddingVertical: 10, paddingHorizontal: 24,
+    borderRadius: BorderRadius.md, borderWidth: 1, borderColor: Colors.border,
+  },
+  qrCancelText: { fontSize: FontSize.sm, color: Colors.textSecondary },
 });

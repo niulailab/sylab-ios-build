@@ -71,6 +71,15 @@
       "EXPO_PUBLIC_OPEN_API_BASE": "https://s.symsgf.xyz",
       "EXPO_PUBLIC_ENABLE_API_LOG": "true"
     },
-    "owner": "ahuaj"
+    "owner": "ahuaj",
+    "updates": {
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/d96bf15e-fb28-4efa-bad6-3449a5f8e0b7"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    }
   }
 }

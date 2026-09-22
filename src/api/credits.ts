@@ -42,6 +42,12 @@ export const creditsApi = {
   createPay: (userId: string, plan: string, payType: 'alipay' | 'wxpay'): Promise<{ status: string; pay_url: string; out_trade_no: string }> =>
     creditsClient.post('/token-api/api/pay/create', { user_id: userId, plan, pay_type: payType }).then(r => r.data),
 
+  // 创建订单并获取内嵌二维码（base64 PNG），不再跳外部浏览器
+  getPayQrCode: (userId: string, plan: string, payType: 'alipay' | 'wxpay'): Promise<{
+    status: string; out_trade_no: string; pay_url: string; qr_base64: string; money: string; credits: string;
+  }> =>
+    creditsClient.post('/token-api/api/pay/qrcode', { user_id: userId, plan, pay_type: payType }).then(r => r.data),
+
   // 轮询订单是否已支付到账
   getPayStatus: (outTradeNo: string): Promise<{ status: string; paid: boolean }> =>
     creditsClient.get(`/token-api/api/pay/status/${outTradeNo}`).then(r => r.data),
