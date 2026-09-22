@@ -1084,10 +1084,9 @@ function ChatDetailScreenInner() {
             setTimeout(() => { try { router.replace('/login'); } catch (e) {} }, 800);
             return;
           }
-          setError(msg || '任务失败');
-          if (lastUserMsgRef.current) {
-            setFailedMessages((prev) => new Set(prev).add(lastUserMsgRef.current!.id));
-          }
+          // Message already delivered; task error != send failure
+          const friendly = msg && msg !== 'Internal Server Error' ? msg : '任务执行异常，请重新发送指令';
+          setError(friendly);
         } catch (e) {}
       },
       // [patch 2026-09-09] 任务已在服务端结束（完成/失败/中转缓存过期）：
