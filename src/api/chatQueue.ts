@@ -1,3 +1,4 @@
+import { RUNTIME_BASE } from '../config/runtime';
 /**
  * Chat Queue Service API
  * 当 SSE 直连断开时，通过任务队列恢复/获取消息
@@ -8,7 +9,7 @@
  * XHR.onprogress 在 iOS 原生 / Android 原生 / web PWA 三端都能分块推送。
  */
 
-const QUEUE_BASE = 'https://s.symsgf.xyz/chat-queue';
+const QUEUE_BASE = `${RUNTIME_BASE}/chat-queue`;
 
 export interface QueueSubmitRequest {
   bot_id: string;

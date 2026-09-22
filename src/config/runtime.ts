@@ -2,7 +2,7 @@
 import { Platform } from 'react-native';
 
 export const RUNTIME_BASE = Platform.OS === 'web'
-  ? 'https://s.symsgf.xyz'
+  ? 'https://direct.symsgf.xyz:8099'
   : 'https://direct.symsgf.xyz:8099';
 
 // 把任意服务端/隧道地址归一化到当前平台真正可达的出口

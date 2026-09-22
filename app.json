@@ -67,8 +67,8 @@
       "router": {
         "origin": false
       },
-      "EXPO_PUBLIC_API_BASE": "https://s.symsgf.xyz",
-      "EXPO_PUBLIC_OPEN_API_BASE": "https://s.symsgf.xyz",
+      "EXPO_PUBLIC_API_BASE": "https://direct.symsgf.xyz:8099",
+      "EXPO_PUBLIC_OPEN_API_BASE": "https://direct.symsgf.xyz:8099",
       "EXPO_PUBLIC_ENABLE_API_LOG": "true"
     },
     "owner": "ahuaj",
