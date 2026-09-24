@@ -915,8 +915,28 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
     }
   })();
 
+  // [FIX 裸链接/空泡] 归一化被换行打断的 markdown 链接。
+  // 渲染器逐行匹配，一旦 ](url) 或 URL 内部被换行拆开，链接会退化成裸文本甚至布局异常。
+  const _normalizeBrokenLinks = (s: string): string => {
+    try {
+      // 0) 合并被换行拆开的 ]( ：即 ] 与 ( 之间夹了换行/空白
+      s = s.replace(/\]\s*\n\s*\(/g, '](');
+      // 1) 完整但跨行的 [label](url)：label 内换行转空格，url 内空白全部移除
+      let r = s.replace(/\[([^\]]*)\]\(\s*([^\s)]+(?:\s+[^\s)]+)*)\s*\)/g,
+        (_m, label, url) => '[' + String(label).replace(/\s*\n\s*/g, ' ').trim() + '](' + String(url).replace(/\s+/g, '') + ')');
+      // 2) 被换行截断（右侧括号缺失）：合到下一行并移除 URL 内空白
+      r = r.replace(/\[([^\]\n]*)\]\(([^)\n]*(?:\n[^)\n]*)*)/g,
+        (_m, label, body) => {
+          const b = String(body);
+          if (!b.includes('\n')) return _m;
+          return '[' + String(label).trim() + '](' + b.replace(/\s+/g, '');
+        });
+      return r;
+    } catch (_e) { return s; }
+  };
+  const normalizedContent = _normalizeBrokenLinks(decodedContent);
   // Trim trailing whitespace/newlines to prevent bubble from being too tall
-  const trimmedContent = decodedContent.replace(/\s+$/, '');
+  const trimmedContent = normalizedContent.replace(/\s+$/, '');
   const lines = trimmedContent.split('\n');
   const elements: React.ReactNode[] = [];
   let inCodeBlock = false;

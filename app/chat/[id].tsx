@@ -521,8 +521,9 @@ function ChatDetailScreenInner() {
       });
       return;
     }
-    // 之后仅在跟随态（用户在底部且未上翻锁）才跟随；后台轮询/排序变化不打扰阅读
-    if (isNearBottomRef.current && !userScrollingRef.current) {
+    // [FIX 到底部跳动] 之后仅“流式正文增长”时才贴底跟随；
+    // 后台轮询/合并导致的消息条数变化（非流式）绝不强制 scrollToEnd，避免位置反复修正而跳。
+    if (isStreaming && isNearBottomRef.current && !userScrollingRef.current) {
       requestFollow();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1512,9 +1513,11 @@ function ChatDetailScreenInner() {
   const stableMsgKey = (m: any, index: number): string => {
     if (m && m.id && !/^msg_\d+$/.test(String(m.id))) return String(m.id);
     if (m) {
+      // [FIX 空泡跳动] 临时消息 key 只用 时间戳+角色，不含内容指纹：
+      // 断线重连/补帧会改写内容，若 key 随内容变化，FlatList 会把同一行 unmount 再 mount，
+      // iOS 上可能出现“测量出高度但未绘制文字”的空泡。时间桶已足够唯一。
       const bucket = Math.floor(Number(m.created_at) / (m.role === 'user' ? 5000 : 3000));
-      const sig = (m.role || '') + '|' + bucket + '|' + String(m.content || '').trim().slice(0, 24);
-      return 'k_' + sig;
+      return 'k_' + (m.role || '') + '_' + bucket;
     }
     return 'idx_' + index;
   };
