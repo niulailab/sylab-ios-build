@@ -494,21 +494,6 @@ function ChatDetailScreenInner() {
   // 历史回来后行高度首次 measure 突变，MVCP 错误锚定→顶部巨大空白，内容稳定 clamp 回来→跳一下。
   const readyLayoutRef = useRef(false);
   const anchorScheduledRef = useRef(false);
-  // [v123] MVCP must turn on only after the whole list has finished settling (images/cards can
-  // resolve well after the first text layout). A fixed 120ms timer (v122) could fire while async
-  // heights were still being injected, so MVCP wrongly translated those late height changes as
-  // "content inserted above the anchor" -> huge top gap, then a corrective jump at the bottom.
-  // We (re)arm a debounce on every content-size change and enable MVCP only after the content
-  // size has stayed unchanged for SETTLE_MS, independent of which content caused the reflow.
-  const MVCP_SETTLE_MS = 400;
-  const mvcpSettleTimerRef = useRef<any>(null);
-  const armMvcpSettle = React.useCallback(() => {
-    if (mvcpSettleTimerRef.current) { clearTimeout(mvcpSettleTimerRef.current); mvcpSettleTimerRef.current = null; }
-    mvcpSettleTimerRef.current = setTimeout(() => {
-      mvcpSettleTimerRef.current = null;
-      setEnableMvcp(true);
-    }, MVCP_SETTLE_MS);
-  }, []);
   const tryInitialAnchor = () => {
     if (didInitialScrollRef.current) return;
     if (!readyLayoutRef.current) return;
@@ -521,8 +506,7 @@ function ChatDetailScreenInner() {
       requestAnimationFrame(() => {
         try { flatListRef.current?.scrollToEnd({ animated: false }); } catch (_) {}
         didInitialScrollRef.current = true;
-        // Start watching for layout quiescence; MVCP enabled only once content size is stable.
-        armMvcpSettle();
+        setTimeout(() => setEnableMvcp(true), 120);
       });
     });
   };
@@ -1667,13 +1651,6 @@ function ChatDetailScreenInner() {
             // 用户上翻锁定期间完全不动。图片固定 220 高占位，历史图片加载也不会误触发跳动。
             if (isStreaming) {
               requestFollowStream();
-            }
-            // [v123] Before the first settle, keep pushing the MVCP enable window forward so it
-            // can never arm while async heights are still being injected.
-            if (!didInitialScrollRef.current) return;
-            if (!enableMvcp) {
-              armMvcpSettle();
-              return;
             }
           }}
           onLayout={() => {
