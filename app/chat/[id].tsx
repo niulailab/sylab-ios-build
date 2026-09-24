@@ -489,6 +489,28 @@ function ChatDetailScreenInner() {
     }
   };
 
+  // [FIX3 顶部空白/到底跳] 首屏唯一定位入口：必须同时满足“已有消息”且“FlatList 已完成布局”。
+  // 历史消息是异步拉取的，旧逻辑在空列表阶段被 onLayout 提前消耗定位标记并打开 MVCP，
+  // 历史回来后行高度首次 measure 突变，MVCP 错误锚定→顶部巨大空白，内容稳定 clamp 回来→跳一下。
+  const readyLayoutRef = useRef(false);
+  const anchorScheduledRef = useRef(false);
+  const tryInitialAnchor = () => {
+    if (didInitialScrollRef.current) return;
+    if (!readyLayoutRef.current) return;
+    if (useChatStore.getState().messages.length <= 0) return;
+    if (anchorScheduledRef.current) return;
+    anchorScheduledRef.current = true;
+    requestAnimationFrame(() => {
+      if (didInitialScrollRef.current) return;
+      try { flatListRef.current?.scrollToEnd({ animated: false }); } catch (_) {}
+      requestAnimationFrame(() => {
+        try { flatListRef.current?.scrollToEnd({ animated: false }); } catch (_) {}
+        didInitialScrollRef.current = true;
+        setTimeout(() => setEnableMvcp(true), 120);
+      });
+    });
+  };
+
   const { user, patToken, isRestoring } = useAuthStore();
   const userName = (() => {
     const n = user?.name || '';
@@ -508,19 +530,8 @@ function ChatDetailScreenInner() {
   const messagesLength = messages.length;
   useEffect(() => {
     if (messagesLength <= 0) return;
-    // 首屏/进入会话：只滚底一次
-    if (!didInitialScrollRef.current) {
-      didInitialScrollRef.current = true;
-      requestAnimationFrame(() => {
-        flatListRef.current?.scrollToEnd({ animated: false });
-        setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: false });
-          // 滚底序列完成、位置稳定后再启用 MVCP（此时才允许它接管后续位置保持）
-          setEnableMvcp(true);
-        }, 120);
-      });
-      return;
-    }
+    // [FIX3] 首屏定位统一走 tryInitialAnchor（要求消息+布局都就绪，杜绝空列表抢定位）。
+    if (!didInitialScrollRef.current) { tryInitialAnchor(); return; }
     // [FIX 到底部跳动] 之后仅“流式正文增长”时才贴底跟随；
     // 后台轮询/合并导致的消息条数变化（非流式）绝不强制 scrollToEnd，避免位置反复修正而跳。
     if (isStreaming && isNearBottomRef.current && !userScrollingRef.current) {
@@ -1643,12 +1654,11 @@ function ChatDetailScreenInner() {
             }
           }}
           onLayout={() => {
-            // [FIX2 抖动] 仅首屏还没定位过时滚一次底；之后键盘弹起/旋转/布局变化一律不碰滚动位置。
-            if (!didInitialScrollRef.current) {
-              didInitialScrollRef.current = true;
-              requestFollow({ force: true });
-              setTimeout(() => setEnableMvcp(true), 160);
-            }
+            // [FIX3 顶部空白/跳动] onLayout 可能在历史消息异步返回前(空列表)触发；旧逻辑在此提前
+            // 消耗首屏定位并打开 MVCP，历史回来后首行高度突变被错误锚定→顶部大空白。
+            // 现仅登记“布局已就绪”，首屏定位统一交给 tryInitialAnchor（消息+布局都就绪才执行）。
+            readyLayoutRef.current = true;
+            tryInitialAnchor();
           }}
           onScrollBeginDrag={() => {
             // 用户手指开始拖拽：立即锁定跟随，且粘滞保持
