@@ -435,6 +435,11 @@ function ChatDetailScreenInner() {
   const userScrollingRef = useRef(false);   // 粘滞：用户手动上翻后保持 true
   const userScrollTimerRef = useRef<any>(null);
   const didInitialScrollRef = useRef(false); // 首屏仅滚底一次，之后 onLayout 不再强行滚底
+  // [FIX 进入聊天页底部持续跳动 2026-09-24] maintainVisibleContentPosition 本质是为
+  // “顶部插入旧消息时保持位置”，与首屏 scrollToEnd（到底部）目标相反；官方文档明确
+  // 启用时对内容插入会产生跳跃/卡顿。因此首屏定位阶段先不启用 MVCP，等滚底稳定后再开，
+  // 既消除首屏抖动，又保留后续上拉加载历史时的位置保持。
+  const [enableMvcp, setEnableMvcp] = useState(false);
   // [FIX2 抖动] 单一合并的“跟随到底”调度：一帧内多次内容/布局变化只滚一次；
   // 流式内容长高阶段不滚（避免边追边抖），仅在跟随态且确有新内容时滚。
   const followRafRef = useRef<any>(null);
@@ -508,7 +513,11 @@ function ChatDetailScreenInner() {
       didInitialScrollRef.current = true;
       requestAnimationFrame(() => {
         flatListRef.current?.scrollToEnd({ animated: false });
-        setTimeout(() => { flatListRef.current?.scrollToEnd({ animated: false }); }, 120);
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: false });
+          // 滚底序列完成、位置稳定后再启用 MVCP（此时才允许它接管后续位置保持）
+          setEnableMvcp(true);
+        }, 120);
       });
       return;
     }
@@ -1615,10 +1624,12 @@ function ChatDetailScreenInner() {
           onEndReachedThreshold={0}
           showsVerticalScrollIndicator={false}
           inverted={false}
-          maintainVisibleContentPosition={{
-            minIndexForVisible: 0,
-            autoscrollToTopThreshold: null,
-          }}
+          {...(enableMvcp ? {
+            maintainVisibleContentPosition: {
+              minIndexForVisible: 0,
+              autoscrollToTopThreshold: null,
+            },
+          } : {})}
           extraData={videoTasks}
           onScroll={handleScroll}
           onContentSizeChange={() => {
@@ -1633,6 +1644,7 @@ function ChatDetailScreenInner() {
             if (!didInitialScrollRef.current) {
               didInitialScrollRef.current = true;
               requestFollow({ force: true });
+              setTimeout(() => setEnableMvcp(true), 160);
             }
           }}
           onScrollBeginDrag={() => {
