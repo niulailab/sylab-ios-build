@@ -227,6 +227,11 @@ function pickFileInfo(url: string): { ext: string; name: string; info: any } | n
   return { ext, name, info };
 }
 
+// 图片扩展名识别（png/jpg/jpeg/gif/webp/heic/bmp/svg）
+function isImageUrl(url: string): boolean {
+  return /\.(png|jpe?g|gif|webp|heic|heif|bmp|svg|avif)(\?|$)/i.test(url);
+}
+
 
 
 // ===== Syntax Highlight Helper =====
@@ -986,6 +991,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
           remaining = remaining.slice(first.idx + first.m[0].length);
           continue;
         }
+        // [FIX] 图片链接：段落文字里跳过，内联图片在段落下方块级渲染
+        if (isImageUrl(u)) {
+          remaining = remaining.slice(first.idx + first.m[0].length);
+          continue;
+        }
         // [FIX] 文件链接（Office/PDF/zip 等）：段落文字里跳过，FileDownloadCard 在段落下方块级渲染，
         // 预览/下载全部 App 内闭环，绝不跳外部浏览器
         if (pickFileInfo(u) && !/\.md(\?|$)/i.test(u)) {
@@ -1039,8 +1049,18 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
         const u = first.m[2];
+        // [FIX] 图片链接：内联渲染缩略图，点开全屏缩放/下载，不跳浏览器
+        if (isImageUrl(u)) {
+          parts.push(
+            <View key={`${key}-img${k}`} style={styles.imgContainer}>
+              <ZoomableImage uri={normalizeImageUrl(u)}>
+                <Image source={{ uri: normalizeImageUrl(u) }} style={styles.img} resizeMode="cover" />
+              </ZoomableImage>
+            </View>
+          );
+        }
         // [FIX] 视频链接使用内联播放器
-        if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
+        else if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
           parts.push(<View key={`${key}-vid${k}`} style={{ marginVertical: 6 }}><VideoPlayerInline src={u} videoKey={`${key}-vid${k}`} /></View>);
         } else {
           const fileFi = pickFileInfo(u);
@@ -1166,6 +1186,18 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
     else if (/^https?:\/\/\S+\.(mp4|webm|mov)(\?\S*)?$/i.test(line.trim())) {
       elements.push(<VideoPlayerInline key={`vid-url-${i}`} src={line.trim()} videoKey={`vid-url-${i}`} />);
     }
+    // 整行是裸图片 URL → 内联图片
+    else if (isImageUrl(line.trim()) && /^https?:\/\/\S+$/.test(line.trim())) {
+      inList = false;
+      const src0 = line.trim();
+      elements.push(
+        <View key={`raw-img-${i}`} style={styles.imgContainer}>
+          <ZoomableImage uri={normalizeImageUrl(src0)}>
+            <Image source={{ uri: normalizeImageUrl(src0) }} style={styles.img} resizeMode="cover" />
+          </ZoomableImage>
+        </View>
+      );
+    }
     // 整行是 Office/文档下载链接 → 文件下载卡片
     else if (pickFileInfo(line.trim()) && /^https?:\/\/\S+$/.test(line.trim())) {
       inList = false;
@@ -1203,11 +1235,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
           const fileLinkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
           const fileCards: { label: string; url: string }[] = [];
           const videoCards: { label: string; url: string }[] = [];
+          const imageCards: { label: string; url: string }[] = [];
           let fm;
           let fmIdx = 0;
           const tempRe = /\[([^\]]+)\]\(([^)]+)\)/g;
           while ((fm = tempRe.exec(line)) !== null) {
-            if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(fm[2])) {
+            if (isImageUrl(fm[2])) {
+              imageCards.push({ label: fm[1], url: fm[2] });
+            } else if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(fm[2])) {
               videoCards.push({ label: fm[1], url: fm[2] });
             } else if (pickFileInfo(fm[2])) {
               fileCards.push({ label: fm[1], url: fm[2] });
@@ -1216,6 +1251,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
           elements.push(
             <View key={`p-${i}`} style={{ marginBottom: Spacing.xs }}>
               <Text selectable style={[styles.paragraph, { color: textColor }]}>{renderInlineForParagraph(line, `p-${i}`)}</Text>
+              {imageCards.map((ic, icIdx) => (
+                <View key={`ic-${i}-${icIdx}`} style={[styles.imgContainer, { marginTop: 6 }]}>
+                  <ZoomableImage uri={normalizeImageUrl(ic.url)}>
+                    <Image source={{ uri: normalizeImageUrl(ic.url) }} style={styles.img} resizeMode="cover" />
+                  </ZoomableImage>
+                  {ic.label ? <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, textAlign: 'center' }}>{ic.label}</Text> : null}
+                </View>
+              ))}
               {videoCards.map((vc, vcIdx) => (
                 <View key={`vc-${i}-${vcIdx}`} style={{ marginTop: 6 }}><VideoPlayerInline src={vc.url} videoKey={`vc-${i}-${vcIdx}`} /></View>
               ))}
