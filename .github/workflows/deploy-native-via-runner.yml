@@ -34,15 +34,19 @@ jobs:
         run: brew install hudochenkov/sshpass/sshpass || true; which sshpass
 
       - name: Upload IPA and deploy script over SSH
+        env:
+          SSH_PASS: ${{ secrets.SSH_PASS_NEW }}
         run: |
-          sshpass -p 'd84w@1aSuT' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             sylab-unsigned.ipa root@36.137.84.216:/tmp/sylab-native-new.ipa
-          sshpass -p 'd84w@1aSuT' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             scripts/remote-deploy.sh root@36.137.84.216:/tmp/remote-deploy.sh
 
       - name: Run remote deployment
+        env:
+          SSH_PASS: ${{ secrets.SSH_PASS_NEW }}
         run: |
-          sshpass -p 'd84w@1aSuT' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             root@36.137.84.216 "bash /tmp/remote-deploy.sh"
 
       - name: Verify public download
