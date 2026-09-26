@@ -1,0 +1,50 @@
+name: Deploy Native IPA via Runner SSH
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: "The build run id whose artifact to deploy"
+        required: true
+        default: "36244342137"
+
+jobs:
+  deploy:
+    runs-on: macos-15
+    steps:
+      - name: Download native IPA artifact from build run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          RID="${{ github.event.inputs.artifact_run_id }}"
+          ART_URL=$(curl -s -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$RID/artifacts" \
+            | python3 -c "import sys,json;d=json.load(sys.stdin);a=[x for x in d['artifacts'] if x['name']=='sylab-ios-unsigned'][0];print(a['archive_download_url'])")
+          curl -sL -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github+json" "$ART_URL" -o art.zip
+          unzip -o art.zip
+          ls -la sylab-unsigned.ipa
+
+      - name: Deploy over SSH (expect)
+        run: |
+          cat > /tmp/deploy.exp <<'EXP'
+          set timeout 600
+          set ipa [lindex $argv 0]
+          spawn scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $ipa root@36.137.84.216:/tmp/sylab-native-new.ipa
+          expect {
+            -re "(?i)password:" { send "d84w@1aSuT\r"; exp_continue }
+            eof
+          }
+          spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@36.137.84.216 "bash -s"
+          expect -re "(?i)password:"
+          send "d84w@1aSuT\r"
+          expect -re {#|\$}
+          send -- "set -e; D=/var/www/sylab-ios; TS=\$(date +%Y%m%d_%H%M%S); cp \$D/sylab-unsigned.ipa \$D/sylab-unsigned.ipa.bak_before_native_\$TS; cp /tmp/sylab-native-new.ipa \$D/sylab-unsigned.ipa; chmod 644 \$D/sylab-unsigned.ipa; cp /tmp/sylab-native-new.ipa \$D/sylab-v127.zip; chmod 644 \$D/sylab-v127.zip; md5sum \$D/sylab-unsigned.ipa; systemctl reload nginx; echo DEPLOY_DONE; exit\r"
+          expect eof
+          EXP
+          chmod +x /tmp/deploy.exp
+          /tmp/deploy.exp sylab-unsigned.ipa
+
+      - name: Verify public download
+        run: |
+          curl -skI --max-time 20 "https://s.symsgf.xyz/sylab-ios/sylab-unsigned.ipa" | grep -iE "HTTP|content-disposition|content-length"
