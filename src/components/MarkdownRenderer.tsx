@@ -232,6 +232,22 @@ function isImageUrl(url: string): boolean {
   return /\.(png|jpe?g|gif|webp|heic|heif|bmp|svg|avif)(\?|$)/i.test(url);
 }
 
+// [FIX link-in-bold] 加粗/斜体包裹的文本仍需递归解析内部的链接/图片/文件，
+// 否则 **[文字](url)** 会被整体当纯文本，链接渲染不出来。
+// 外层 Text 承载粗体/斜体样式，内部节点用对应行内渲染器递归生成。
+function renderStyledContent(
+  inner: string,
+  keyBase: string,
+  style: any,
+  renderSelf: (text: string, key: string) => React.ReactNode
+): React.ReactNode {
+  return (
+    <Text key={keyBase} style={style}>
+      {renderSelf(inner, keyBase + '-in')}
+    </Text>
+  );
+}
+
 
 
 // ===== Syntax Highlight Helper =====
@@ -416,10 +432,10 @@ function simpleMdToElements(md: string, isDark: boolean): React.ReactNode[] {
       }
       if (first.idx > 0) parts.push(<Text key={`${key}-pre${k}`} style={{ color: tc }}>{remaining.slice(0, first.idx)}</Text>);
       if (first.type === 'bold') {
-        parts.push(<Text key={`${key}-b${k}`} style={{ color: tc, fontWeight: '700' }}>{first.m[1]}</Text>);
+        parts.push(renderStyledContent(first.m[1], `${key}-b${k}`, { color: tc, fontWeight: '700' }, parseInline));
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'italic') {
-        parts.push(<Text key={`${key}-i${k}`} style={{ color: tc, fontStyle: 'italic' }}>{first.m[2]}</Text>);
+        parts.push(renderStyledContent(first.m[2], `${key}-i${k}`, { color: tc, fontStyle: 'italic' }, parseInline));
         remaining = remaining.slice(first.idx + first.m[2].length + 2);
       } else if (first.type === 'code') {
         parts.push(<Text key={`${key}-c${k}`} style={{ color: '#e11d48', backgroundColor: cb, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, fontSize: 13 }}>{first.m[1]}</Text>);
@@ -976,10 +992,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
       }
       if (first.idx > 0) parts.push(<Text key={`${key}-ppre${k}`} style={{ color: textColor }}>{remaining.slice(0, first.idx)}</Text>);
       if (first.type === 'bold') {
-        parts.push(<Text key={`${key}-pb${k}`} style={{ color: textColor, fontWeight: '700' }}>{first.m[1]}</Text>);
+        parts.push(renderStyledContent(first.m[1], `${key}-pb${k}`, { color: textColor, fontWeight: '700' }, renderInlineForParagraph));
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'italic') {
-        parts.push(<Text key={`${key}-pi${k}`} style={{ color: textColor, fontStyle: 'italic' }}>{first.m[2]}</Text>);
+        parts.push(renderStyledContent(first.m[2], `${key}-pi${k}`, { color: textColor, fontStyle: 'italic' }, renderInlineForParagraph));
         remaining = remaining.slice(first.idx + first.m[2].length + 2);
       } else if (first.type === 'code') {
         parts.push(<Text key={`${key}-pc${k}`} style={{ color: '#e11d48', backgroundColor: codeBg, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, fontSize: 13 }}>{first.m[1]}</Text>);
@@ -1039,10 +1055,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
       }
       if (first.idx > 0) parts.push(<Text key={`${key}-pre${k}`} style={{ color: textColor }}>{remaining.slice(0, first.idx)}</Text>);
       if (first.type === 'bold') {
-        parts.push(<Text key={`${key}-b${k}`} style={{ color: textColor, fontWeight: '700' }}>{first.m[1]}</Text>);
+        parts.push(renderStyledContent(first.m[1], `${key}-b${k}`, { color: textColor, fontWeight: '700' }, renderInline));
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'italic') {
-        parts.push(<Text key={`${key}-i${k}`} style={{ color: textColor, fontStyle: 'italic' }}>{first.m[2]}</Text>);
+        parts.push(renderStyledContent(first.m[2], `${key}-i${k}`, { color: textColor, fontStyle: 'italic' }, renderInline));
         remaining = remaining.slice(first.idx + first.m[2].length + 2);
       } else if (first.type === 'code') {
         parts.push(<Text key={`${key}-c${k}`} style={{ color: '#e11d48', backgroundColor: codeBg, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, fontSize: 13 }}>{first.m[1]}</Text>);
