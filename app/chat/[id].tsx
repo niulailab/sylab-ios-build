@@ -1746,6 +1746,8 @@ function ChatDetailScreenInner() {
 
       {/* Dynamic typing indicator + input with keyboard avoidance */}
       <View style={{ marginBottom: keyboardHeight + (Platform.OS === 'ios' ? insets.bottom : 0) }}>
+        {/* [FIX bottom jump] status cards taken out of flow as an absolute overlay */}
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: '100%' }} pointerEvents="box-none">
         {(conversationId || id) ? (
           <DagProgressCard conversationId={(conversationId || id || '') as string} isDark={isDark} />
         ) : null}
@@ -1762,6 +1764,7 @@ function ChatDetailScreenInner() {
             isDark={isDark}
           />
         ) : null}
+        </View>
         <ChatInput
         onSend={handleSend}
         onStop={handleStop}
