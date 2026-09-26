@@ -16,9 +16,11 @@ jobs:
       - name: Install sshpass
         run: brew install hudochenkov/sshpass/sshpass || true; which sshpass
       - name: Execute remote script
+        env:
+          SSH_PASS: ${{ secrets.SSH_PASS_NEW }}
         run: |
           S="${{ github.event.inputs.script }}"
-          sshpass -p 'd84w@1aSuT' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             "$S" root@36.137.84.216:/tmp/_run.sh
-          sshpass -p 'd84w@1aSuT' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             root@36.137.84.216 "bash /tmp/_run.sh"
