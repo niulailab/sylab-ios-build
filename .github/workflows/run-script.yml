@@ -1,0 +1,24 @@
+name: Run Remote Script
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "repo-relative remote script under scripts/"
+        required: true
+        default: "scripts/fix2.sh"
+
+jobs:
+  run:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sshpass
+        run: brew install hudochenkov/sshpass/sshpass || true; which sshpass
+      - name: Execute remote script
+        run: |
+          S="${{ github.event.inputs.script }}"
+          sshpass -p 'd84w@1aSuT' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "$S" root@36.137.84.216:/tmp/_run.sh
+          sshpass -p 'd84w@1aSuT' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            root@36.137.84.216 "bash /tmp/_run.sh"
