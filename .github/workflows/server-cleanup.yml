@@ -1,0 +1,18 @@
+name: Server Cleanup via Runner
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  cleanup:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sshpass
+        run: brew install hudochenkov/sshpass/sshpass || true; which sshpass
+      - name: Run server cleanup over SSH
+        run: |
+          sshpass -p 'd84w@1aSuT' scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/f2b-db.sh root@36.137.84.216:/tmp/f2b-db.sh
+          sshpass -p 'd84w@1aSuT' ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            root@36.137.84.216 "bash /tmp/f2b-db.sh"
