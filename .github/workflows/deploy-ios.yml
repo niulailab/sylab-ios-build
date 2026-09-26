@@ -1,0 +1,70 @@
+name: Deploy iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "build-ios run id (blank = latest successful build)"
+        required: false
+        default: ""
+      artifact_name:
+        description: "artifact name"
+        required: true
+        default: "sylab-ios-unsigned"
+      tag:
+        description: "download filename tag, e.g. v129 -> sylab-v129.ipa"
+        required: true
+        default: "v129"
+
+jobs:
+  deploy:
+    runs-on: macos-15
+    env:
+      SSH_PASS: ${{ secrets.SSH_PASS_NEW }}
+    steps:
+      - name: Install sshpass
+        run: brew install hudochenkov/sshpass/sshpass || true; which sshpass
+      - name: Resolve run id
+        id: rid
+        run: |
+          if [ -n "${{ github.event.inputs.run_id }}" ]; then
+            echo "rid=${{ github.event.inputs.run_id }}" >> $GITHUB_OUTPUT
+          else
+            R=$(gh run list --workflow=build-ios.yml --status=success --branch=main --limit=1 --json databaseId --jq '.[0].databaseId')
+            echo "rid=$R" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download artifact
+        run: |
+          mkdir -p dl && cd dl
+          gh run download "${{ steps.rid.outputs.rid }}" --name "${{ github.event.inputs.artifact_name }}"
+          ls -l
+          test -f sylab-unsigned.ipa
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Backup and upload
+        run: |
+          SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          TS=$(date +%Y%m%d%H%M%S)
+          sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "
+            mkdir -p /var/www/sylab-ios/backup;
+            [ -f /var/www/sylab-ios/sylab-unsigned.ipa ] && cp /var/www/sylab-ios/sylab-unsigned.ipa /var/www/sylab-ios/backup/sylab-prev-$TS.ipa;
+            cp /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.bak-$TS;
+            echo backed-up"
+          sshpass -p "$SSH_PASS" scp $SSHO dl/sylab-unsigned.ipa root@36.137.84.216:/var/www/sylab-ios/sylab-unsigned.ipa
+          echo uploaded
+      - name: Update nginx download tag and reload
+        run: |
+          SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          TAG="${{ github.event.inputs.tag }}"
+          sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "
+            sed -i -E 's#filename=\"sylab-v[0-9]+\.ipa\"#filename=\"sylab-$TAG.ipa\"#g' /etc/nginx/sites-enabled/default;
+            grep -n 'Content-Disposition' /etc/nginx/sites-enabled/default;
+            nginx -t && systemctl reload nginx && echo reloaded"
+      - name: Verify deployed
+        run: |
+          SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "
+            ls -l /var/www/sylab-ios/sylab-unsigned.ipa; md5sum /var/www/sylab-ios/sylab-unsigned.ipa;
+            curl -sI http://127.0.0.1/sylab-ios/sylab-unsigned.ipa | grep -i content-disposition"
