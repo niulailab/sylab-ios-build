@@ -1,0 +1,19 @@
+name: SSH Auth Diag
+on:
+  workflow_dispatch:
+jobs:
+  d:
+    runs-on: macos-latest
+    steps:
+      - name: Install sshpass
+        run: brew install hudochenkov/sshpass/sshpass || true; export PATH="/opt/homebrew/bin:$PATH"; which sshpass
+      - name: Try passwords
+        env:
+          OP: ${{ secrets.SSH_PASS_OLD }}
+          NP: ${{ secrets.SSH_PASS_NEW }}
+        run: |
+          export PATH="/opt/homebrew/bin:$PATH"
+          try(){ sshpass -p "$2" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o NumberOfPasswordPrompts=1 -o ConnectTimeout=15 root@36.137.84.216 "echo OK_$1" 2>/dev/null | grep -E "OK_$1" && echo "RESULT_$1=SUCCESS" || echo "RESULT_$1=FAIL"; }
+          try OLD "$OP"
+          try NEW "$NP"
+          echo done
