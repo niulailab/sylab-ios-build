@@ -2,7 +2,7 @@
   "expo": {
     "name": "sylab",
     "slug": "sylab-app",
-    "version": "1.0.11",
+    "version": "1.0.15",
     "orientation": "portrait",
     "scheme": "sylab",
     "userInterfaceStyle": "automatic",
@@ -19,7 +19,7 @@
           "NSAllowsArbitraryLoadsInWebContent": true
         }
       },
-      "buildNumber": "11"
+      "buildNumber": "15"
     },
     "android": {
       "adaptiveIcon": {
@@ -32,7 +32,7 @@
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.RECORD_AUDIO"
       ],
-      "versionCode": 11
+      "versionCode": 15
     },
     "web": {
       "bundler": "metro",
