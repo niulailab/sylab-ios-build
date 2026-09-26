@@ -927,7 +927,7 @@ function TableBlock(props: TableBlockProps) {
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isDark }) => {
   const [mdPreviewUrl, setMdPreviewUrl] = React.useState<string | null>(null);
   const [renderError, setRenderError] = React.useState<string | null>(null);
-  const { decodedContent, parseError } = (() => {
+  const { decodedContent: decodedContentRaw, parseError } = (() => {
     try {
       const dc = decodeURIComponent(content || '');
       return { decodedContent: dc, parseError: null };
@@ -935,6 +935,25 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
       return { decodedContent: content || '', parseError: null };
     }
   })();
+
+  // [FIX 字面\n] 模型流式 SSE 的 JSON 片段里，换行常被转义成字面两字符 "\n"（反斜杠+n），
+  // 落库后 content 里没有真实换行，整段会被当成一行，导致 bold/link 解析错乱（链接发黑、点不动）。
+  // 这里把字面 "\n" 还原成真实换行；但必须先保护代码块(```)与行内 code(`)，
+  // 因为代码里出现的字面 \n 是有意义的内容，不能改。
+  const _unescapeLiteralNewlines = (raw: string): string => {
+    try {
+      if (raw.indexOf('\\n') < 0) return raw;
+      const blocks: string[] = [];
+      let s = raw.replace(/```[\s\S]*?```/g, (m) => { blocks.push(m); return `@@CB${blocks.length - 1}@@`; });
+      const codes: string[] = [];
+      s = s.replace(/`[^`\n]+`/g, (m) => { codes.push(m); return `@@CI${codes.length - 1}@@`; });
+      s = s.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\\r/g, '\n');
+      s = s.replace(/@@CB(\d+)@@/g, (_m, i) => blocks[Number(i)]);
+      s = s.replace(/@@CI(\d+)@@/g, (_m, i) => codes[Number(i)]);
+      return s;
+    } catch (_e) { return raw; }
+  };
+  const decodedContent = _unescapeLiteralNewlines(decodedContentRaw);
 
   // [FIX 裸链接/空泡] 归一化被换行打断的 markdown 链接。
   // 渲染器逐行匹配，一旦 ](url) 或 URL 内部被换行拆开，链接会退化成裸文本甚至布局异常。
