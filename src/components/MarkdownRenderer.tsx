@@ -983,6 +983,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
   let codeContent = '';
   let codeLang = '';
   let inList = false;
+  // [FIX] 只要消息里出现块级卡片（图片/视频/文件），就给气泡确定宽度，避免纯文件消息缩成一半宽
+  let hasBlockCard = false;
 
   const textColor = isDark ? Colors.textInverse : Colors.text;
   const codeBg = isDark ? '#1e1e1e' : '#f5f5f5';
@@ -1084,28 +1086,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         remaining = remaining.slice(first.idx + first.m[0].length);
       } else if (first.type === 'link') {
         const u = first.m[2];
-        // [FIX] 图片链接：内联渲染缩略图，点开全屏缩放/下载，不跳浏览器
-        if (isImageUrl(u)) {
-          parts.push(
-            <View key={`${key}-img${k}`} style={styles.imgContainer}>
-              <ZoomableImage uri={normalizeImageUrl(u)}>
-                <Image source={{ uri: normalizeImageUrl(u) }} style={styles.img} resizeMode="cover" />
-              </ZoomableImage>
-            </View>
-          );
-        }
-        // [FIX] 视频链接使用内联播放器
-        else if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u)) {
-          parts.push(<View key={`${key}-vid${k}`} style={{ marginVertical: 6 }}><VideoPlayerInline src={u} videoKey={`${key}-vid${k}`} /></View>);
+        // [FIX] 此函数仅渲染“内联”节点（所有调用点都在 <Text> 内），禁止返回 <View>：
+        // 文件/图片/视频卡片一律作为块级元素在所在行下方单独渲染（见 collectBlockLinks），
+        // 否则 <View> 嵌进 <Text> 会被 Yoga 压成内容宽，出现小方块/文字竖排。
+        if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u) || isImageUrl(u) || (pickFileInfo(u) && !/\.md(\?|$)/i.test(u))) {
+          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { downloadAndShare(u); }}>{first.m[1]}</Text>);
+        } else if (/\.md(\?|$)/i.test(u)) {
+          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
         } else {
-          const fileFi = pickFileInfo(u);
-          if (fileFi) {
-            parts.push(<View key={`${key}-l${k}`} style={{ marginVertical: 6 }}><FileDownloadCard url={u} /></View>);
-          } else if (/\.md(\?|$)/i.test(u)) {
-            parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
-          } else {
-            parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
-          }
+          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { openExternally(u); }}>{first.m[1]}</Text>);
         }
         remaining = remaining.slice(first.idx + first.m[0].length);
       }
@@ -1113,6 +1102,59 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
     }
     return parts.length <= 1 ? (parts[0] || <></>) : <>{parts}</>;
   };
+
+  // [FIX] 收集一行中的“块级”链接（图片/视频/文件），用于在文字下方块级渲染卡片。
+  // 普通网页链接不在此列，保持内联蓝字。
+  const collectBlockLinks = (text: string): { files: {label:string;url:string}[]; videos: {label:string;url:string}[]; images: {label:string;url:string}[] } => {
+    const files: {label:string;url:string}[] = [];
+    const videos: {label:string;url:string}[] = [];
+    const images: {label:string;url:string}[] = [];
+    const re = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const label = m[1], url = m[2];
+      if (isImageUrl(url)) images.push({ label, url });
+      else if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(url)) videos.push({ label, url });
+      else if (pickFileInfo(url) && !/\.md(\?|$)/i.test(url)) files.push({ label, url });
+    }
+    return { files, videos, images };
+  };
+
+  // [FIX] 列表项标签：把块级链接的 markdown 语法去掉、只留文字（卡片在下方块级渲染）；
+  // 普通网页链接 / md 链接保持内联可点。
+  const stripBlockLinksForList = (text: string): string => text.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+    (whole, label, url) => {
+      const u: string = url;
+      if (isImageUrl(u) || /\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u) || (pickFileInfo(u) && !/\.md(\?|$)/i.test(u))) {
+        return label as string;
+      }
+      return whole;
+    }
+  );
+
+  // 统一把块级卡片渲染到文字下方（图片带说明、视频播放器、文件下载卡）。
+  const renderBlockCards = (
+    b: { files: {label:string;url:string}[]; videos: {label:string;url:string}[]; images: {label:string;url:string}[] },
+    keyBase: string
+  ): React.ReactNode => (
+    <>
+      {b.images.map((ic, idx) => (
+        <View key={`${keyBase}-img-${idx}`} style={[styles.imgContainer, { marginTop: 6 }]}>
+          <ZoomableImage uri={normalizeImageUrl(ic.url)}>
+            <Image source={{ uri: normalizeImageUrl(ic.url) }} style={styles.img} resizeMode="cover" />
+          </ZoomableImage>
+          {ic.label ? <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, textAlign: 'center' }}>{ic.label}</Text> : null}
+        </View>
+      ))}
+      {b.videos.map((vc, idx) => (
+        <View key={`${keyBase}-vid-${idx}`} style={{ marginTop: 6 }}><VideoPlayerInline src={vc.url} videoKey={`${keyBase}-vid-${idx}`} /></View>
+      ))}
+      {b.files.map((fc, idx) => (
+        <View key={`${keyBase}-file-${idx}`} style={{ marginTop: 6 }}><FileDownloadCard url={fc.url} /></View>
+      ))}
+    </>
+  );
 
   // 宽度用屏宽常量估算（首帧定值）。禁止 onLayout setState 回写：原生 Yoga 布局会形成测量反馈环导致消息列表反复重排闪烁
   const availW = Math.max(200, Math.floor(Dimensions.get('window').width * 0.92) - 32);
@@ -1182,10 +1224,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
     // Unordered list
     else if (line.startsWith('- ') || line.startsWith('* ')) {
       if (!inList) { inList = true; }
+      const body = line.slice(2);
+      const blocks = collectBlockLinks(body);
+      if (blocks.files.length + blocks.videos.length + blocks.images.length > 0) hasBlockCard = true;
+      const labelText = stripBlockLinksForList(body);
       elements.push(
         <View key={`li-${i}`} style={styles.listItem}>
           <Text style={{ color: textColor, fontSize: FontSize.md, width: 16 }}>•</Text>
-          <Text selectable style={{ color: textColor, fontSize: FontSize.md, flex: 1 }}>{renderInline(line.slice(2), `li-${i}`)}</Text>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text selectable style={{ color: textColor, fontSize: FontSize.md }}>{renderInline(labelText, `li-${i}`)}</Text>
+            {renderBlockCards(blocks, `li-${i}`)}
+          </View>
         </View>
       );
     }
@@ -1193,10 +1242,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
     else if (/^\d+\.\s/.test(line)) {
       const match = line.match(/^(\d+)\.\s(.*)$/);
       if (match) {
+        const blocks = collectBlockLinks(match[2]);
+        if (blocks.files.length + blocks.videos.length + blocks.images.length > 0) hasBlockCard = true;
+        const labelText = stripBlockLinksForList(match[2]);
         elements.push(
           <View key={`ol-${i}`} style={styles.listItem}>
             <Text style={{ color: Colors.primary, fontSize: FontSize.md, fontWeight: '600', width: 24 }}>{match[1]}.</Text>
-            <Text selectable style={{ color: textColor, fontSize: FontSize.md, flex: 1 }}>{renderInline(match[2], `ol-${i}`)}</Text>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text selectable style={{ color: textColor, fontSize: FontSize.md }}>{renderInline(labelText, `ol-${i}`)}</Text>
+              {renderBlockCards(blocks, `ol-${i}`)}
+            </View>
           </View>
         );
       }
@@ -1265,41 +1320,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
             </View>
           );
         } else {
-          // [FIX] 普通文本段落：文字用 renderInlineForParagraph（文件/视频链接只显示蓝色文字）
-          // 文件卡片和视频播放器单独提取渲染在段落下方
-          const fileLinkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
-          const fileCards: { label: string; url: string }[] = [];
-          const videoCards: { label: string; url: string }[] = [];
-          const imageCards: { label: string; url: string }[] = [];
-          let fm;
-          let fmIdx = 0;
-          const tempRe = /\[([^\]]+)\]\(([^)]+)\)/g;
-          while ((fm = tempRe.exec(line)) !== null) {
-            if (isImageUrl(fm[2])) {
-              imageCards.push({ label: fm[1], url: fm[2] });
-            } else if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(fm[2])) {
-              videoCards.push({ label: fm[1], url: fm[2] });
-            } else if (pickFileInfo(fm[2])) {
-              fileCards.push({ label: fm[1], url: fm[2] });
-            }
-          }
+          // 普通文本段落：块级链接（图片/视频/文件）在文字下方块级渲染卡片；普通链接内联蓝字
+          const blocks = collectBlockLinks(line);
+          if (blocks.files.length + blocks.videos.length + blocks.images.length > 0) hasBlockCard = true;
           elements.push(
             <View key={`p-${i}`} style={{ marginBottom: Spacing.xs }}>
               <Text selectable style={[styles.paragraph, { color: textColor }]}>{renderInlineForParagraph(line, `p-${i}`)}</Text>
-              {imageCards.map((ic, icIdx) => (
-                <View key={`ic-${i}-${icIdx}`} style={[styles.imgContainer, { marginTop: 6 }]}>
-                  <ZoomableImage uri={normalizeImageUrl(ic.url)}>
-                    <Image source={{ uri: normalizeImageUrl(ic.url) }} style={styles.img} resizeMode="cover" />
-                  </ZoomableImage>
-                  {ic.label ? <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, textAlign: 'center' }}>{ic.label}</Text> : null}
-                </View>
-              ))}
-              {videoCards.map((vc, vcIdx) => (
-                <View key={`vc-${i}-${vcIdx}`} style={{ marginTop: 6 }}><VideoPlayerInline src={vc.url} videoKey={`vc-${i}-${vcIdx}`} /></View>
-              ))}
-              {fileCards.map((fc, fcIdx) => (
-                <View key={`fc-${i}-${fcIdx}`} style={{ marginTop: 6 }}><FileDownloadCard url={fc.url} /></View>
-              ))}
+              {renderBlockCards(blocks, `p-${i}`)}
             </View>
           );
         }
@@ -1316,7 +1343,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
     <>
       {Platform.OS === 'web' && <style>{webWrapCSS}</style>}
       <View
-      style={styles.container}
+      style={[styles.container, hasBlockCard ? { width: availW } : null]}
       className="md-bubble"
     >{elements.length > 0 ? elements : fallbackText}</View>
     {mdPreviewUrl ? <MarkdownPreviewModal url={mdPreviewUrl} onClose={() => setMdPreviewUrl(null)} /> : null}
