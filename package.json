@@ -1,6 +1,6 @@
 {
   "name": "sylab-app",
-  "version": "1.0.11",
+  "version": "1.0.15",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
