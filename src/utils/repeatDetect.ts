@@ -73,3 +73,30 @@ export function detectRepeat(
   }
   return { matched: count >= 1, count, score };
 }
+
+/**
+ * 口头指令识别：用户直接用自然语言要求“现场制作并保存技能”。
+ * 命中关键词且包含“技能/skill”，并带有“创建/做/生成/存/保存/沉淀/提炼”等动作。
+ */
+const SKILL_NOUN = /(技能|skill|sop|模板)/i;
+const SKILL_MAKE_VERB =
+  /(创建|新建|创造|制作|生成|做(?:一?个|成)?|写(?:一?个)?|沉淀|提炼|总结成|整理成|保存|存(?:到|进|入|一?个)?|搞(?:一?个)?)/;
+
+export interface VoiceSkillIntent {
+  hit: boolean;
+  /** 可能附带的技能名称，如“做一个叫xx的技能” */
+  name: string;
+}
+
+export function parseVoiceSkillIntent(text: string): VoiceSkillIntent {
+  const t = String(text || '').trim();
+  if (!t) return { hit: false, name: '' };
+  if (!SKILL_NOUN.test(t)) return { hit: false, name: '' };
+  if (!SKILL_MAKE_VERB.test(t)) return { hit: false, name: '' };
+  // 尝试抽取 “叫/命名为/名为 XX” 的名称
+  let name = '';
+  const m =
+    t.match(/(?:命名为|取名为|名字叫|叫(?:做)?|名称为|名为)\s*[「“『"]?([\u4e00-\u9fffA-Za-z0-9·]{2,20})[」”’"]?/);
+  if (m) name = m[1];
+  return { hit: true, name };
+}

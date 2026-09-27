@@ -29,6 +29,8 @@ import { Ionicons } from '@expo/vector-icons';
 import SkillEditor from '../../src/components/SkillEditor';
 import { extractSkillFromMessages, SkillDraft } from '../../src/api/skillExtract';
 import { detectRepeat } from '../../src/utils/repeatDetect';
+import { parseVoiceSkillIntent } from '../../src/utils/repeatDetect';
+import { skillApi, Skill } from '../../src/api/skill';
 import type { ChatMessage } from '../../src/types/api';
 
 // Safe Clipboard wrapper
@@ -542,6 +544,10 @@ function ChatDetailScreenInner() {
   const repeatHintDoneRef = useRef<Set<string>>(new Set()); // 本会话已提示过的任务指纹
   const repeatWatchConvRef = useRef<string>('');
   const repeatWatchTextRef = useRef<string>('');
+  // 口头指令现场制作技能：自动提炼→直接入库
+  const [voiceMaking, setVoiceMaking] = useState(false);
+  const [savedSkillForEdit, setSavedSkillForEdit] = useState<Skill | null>(null);
+  const [showSavedEditor, setShowSavedEditor] = useState(false);
   const userName = (() => {
     const n = user?.name || '';
     return /^\d+$/.test(n.trim()) ? '用户' : (n || '用户');
@@ -1213,6 +1219,12 @@ function ChatDetailScreenInner() {
       try { router.replace('/login'); } catch (e) {}
       return;
     }
+    // 口头指令：要求现场制作并保存技能 → 拦截，不发给普通对话
+    const voice = parseVoiceSkillIntent(text);
+    if (voice.hit) {
+      handleVoiceCreateSkill(text, voice.name);
+      return;
+    }
     if (!patToken) return; if (!text.trim() && (!fileIds || fileIds.length === 0)) return;
 
     // [FIX scroll] 用户主动发消息：恢复跟随并滚到底部，以便看到新回复
@@ -1455,10 +1467,75 @@ function ChatDetailScreenInner() {
     });
   };
 
+  // 取近30条有效对话用于提炼
+  const buildExtractSource = () =>
+    (useChatStore.getState().messages || [])
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .filter((m) => !/task_id|任务ID|进度[：:]?\s*\d+%|视频正在生成/i.test(m.content || ''))
+      .slice(-30)
+      .map((m) => ({ role: m.role as 'user' | 'assistant', content: String(m.content || '') }))
+      .filter((m) => m.content.trim());
+
+  // 口头指令：现场制作并保存技能
+  const handleVoiceCreateSkill = (rawText: string, givenName = '') => {
+    const source = buildExtractSource();
+    if (source.length < 2) {
+      Alert.alert('内容还不够', '先把要做成技能的流程聊清楚（至少一轮任务），再告诉我保存');
+      return;
+    }
+    setExtractErr('');
+    setVoiceMaking(true);
+    abortExtractRef.current = extractSkillFromMessages(source, user?.id || '', {
+      onDone: (draft, reason) => {
+        abortExtractRef.current = null;
+        if (!draft) {
+          setVoiceMaking(false);
+          Alert.alert('没提炼出流程', reason || '暂无可复用的固定流程，先详细描述一遍再让我保存');
+          return;
+        }
+        const finalName = (givenName || draft.name || '自定义技能').trim();
+        skillApi
+          .create({
+            userId: user?.id || '',
+            name: finalName,
+            icon: draft.icon,
+            category: draft.category,
+            trigger: draft.trigger,
+            tools: draft.tools,
+            estCredits: [1, 5],
+            params: draft.params,
+            content: draft.content,
+          })
+          .then((newId) => skillApi.list(user?.id || '').then((all) => all.find((x) => x.id === newId)))
+          .then((saved) => {
+            setVoiceMaking(false);
+            Alert.alert(
+              '技能已做好并入库 ✅',
+              `「${finalName}」已存进技能库，下次可一键引用。`,
+              [
+                { text: '查看/编辑', onPress: () => { if (saved) { setSavedSkillForEdit(saved); setShowSavedEditor(true); } } },
+                { text: '好的', style: 'cancel' },
+              ],
+            );
+          })
+          .catch((e) => {
+            setVoiceMaking(false);
+            Alert.alert('保存失败', e?.message || '请稍后重试');
+          });
+      },
+      onError: (e) => {
+        setVoiceMaking(false);
+        abortExtractRef.current = null;
+        Alert.alert('制作失败', e?.message || '请稍后重试');
+      },
+    });
+  };
+
   const handleCancelExtract = () => {
     try { abortExtractRef.current?.abort(); } catch {}
     abortExtractRef.current = null;
     setExtracting(false);
+    setVoiceMaking(false);
   };
 
   // 登记“刚发出的任务”，等 AI 回复结束后再判断是否为重复流程
@@ -1919,19 +1996,36 @@ function ChatDetailScreenInner() {
         userId={user?.id || ''}
       />
 
-      {/* AI 提炼技能中 */}
-      <Modal visible={extracting} transparent animationType="fade" onRequestClose={handleCancelExtract}>
+      {/* AI 提炼 / 口头制作技能中 */}
+      <Modal visible={extracting || voiceMaking} transparent animationType="fade" onRequestClose={handleCancelExtract}>
         <View style={extractStyles.overlay}>
           <View style={extractStyles.box}>
             <ActivityIndicator color={Colors.primary} />
-            <Text style={extractStyles.title}>正在提炼可复用流程…</Text>
-            <Text style={extractStyles.sub}>AI 会生成技能提案，需你确认后才入库</Text>
+            <Text style={extractStyles.title}>
+              {voiceMaking ? '正在现场制作技能…' : '正在提炼可复用流程…'}
+            </Text>
+            <Text style={extractStyles.sub}>
+              {voiceMaking ? '做好后会自动存进你的技能库' : 'AI 会生成技能提案，需你确认后才入库'}
+            </Text>
             <TouchableOpacity onPress={handleCancelExtract} style={extractStyles.cancel}>
               <Text style={extractStyles.cancelTxt}>取消</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
+
+      {/* 口头制作入库后，查看/编辑 */}
+      <SkillEditor
+        visible={showSavedEditor}
+        userId={user?.id || ''}
+        edit={savedSkillForEdit}
+        onClose={() => { setShowSavedEditor(false); setSavedSkillForEdit(null); }}
+        onSaved={() => {
+          setShowSavedEditor(false);
+          setSavedSkillForEdit(null);
+          Alert.alert('已更新', '技能修改已保存');
+        }}
+      />
 
       {/* 提案预填编辑器：用户确认/修改后保存为私有技能 */}
       <SkillEditor
