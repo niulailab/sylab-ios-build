@@ -6,8 +6,8 @@ import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
-import { skillApi, Skill, SkillParam } from '../../api/skill';
-import { Colors } from '../../constants';
+import { skillApi, Skill, SkillParam } from '../api/skill';
+import { Colors } from '../constants';
 
 interface Props {
   visible: boolean;
