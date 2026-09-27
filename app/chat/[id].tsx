@@ -28,6 +28,7 @@ import DagProgressCard from '../../src/components/DagProgressCard';
 import { Ionicons } from '@expo/vector-icons';
 import SkillEditor from '../../src/components/SkillEditor';
 import { extractSkillFromMessages, SkillDraft } from '../../src/api/skillExtract';
+import { detectRepeat } from '../../src/utils/repeatDetect';
 import type { ChatMessage } from '../../src/types/api';
 
 // Safe Clipboard wrapper
@@ -535,6 +536,12 @@ function ChatDetailScreenInner() {
   const [draftSkill, setDraftSkill] = useState<SkillDraft | null>(null);
   const [showDraftEditor, setShowDraftEditor] = useState(false);
   const abortExtractRef = useRef<null | { abort: () => void }>(null);
+  // 重复流程轻提示：纯本地检测，命中后只提示一次，用户可选择提炼或忽略
+  const [showRepeatHint, setShowRepeatHint] = useState(false);
+  const repeatHintConvRef = useRef<string>('');
+  const repeatHintDoneRef = useRef<Set<string>>(new Set()); // 本会话已提示过的任务指纹
+  const repeatWatchConvRef = useRef<string>('');
+  const repeatWatchTextRef = useRef<string>('');
   const userName = (() => {
     const n = user?.name || '';
     return /^\d+$/.test(n.trim()) ? '用户' : (n || '用户');
@@ -1278,6 +1285,10 @@ function ChatDetailScreenInner() {
 
   const doSend = async (text: string, _files?: any[], fileIds?: string[], forcedConvId?: string, skipUserMsg?: boolean) => {
     const effectiveConvId = forcedConvId || conversationId || id || '';
+    // 纯文本任务才参与重复流程检测（图片/文件类不提示）
+    if (text && text.trim() && (!fileIds || fileIds.length === 0) && (!_files || _files.length === 0)) {
+      armRepeatWatch(String(effectiveConvId), text);
+    }
 
     // Dedupe in-flight identical sends (double tap / race between queue + direct send)
     const sendFingerprint = effectiveConvId + '|' + (text || '').trim() + '|' + (fileIds ? fileIds.join(',') : '') + '|' + Date.now().toString().slice(0, -3);
@@ -1448,6 +1459,54 @@ function ChatDetailScreenInner() {
     try { abortExtractRef.current?.abort(); } catch {}
     abortExtractRef.current = null;
     setExtracting(false);
+  };
+
+  // 登记“刚发出的任务”，等 AI 回复结束后再判断是否为重复流程
+  const armRepeatWatch = (convKey: string, text: string) => {
+    repeatWatchConvRef.current = convKey;
+    repeatWatchTextRef.current = text;
+  };
+
+  // 流式回复结束：对本轮用户任务做本地重复检测，命中则轻提示一次
+  useEffect(() => {
+    if (isStreaming) return;
+    const convKey = String(conversationId || id || '');
+    if (!convKey || repeatWatchConvRef.current !== convKey) return;
+    const text = repeatWatchTextRef.current;
+    repeatWatchConvRef.current = '';
+    repeatWatchTextRef.current = '';
+    if (!text) return;
+    const userTexts = (useChatStore.getState().messages || [])
+      .filter((m) => m.role === 'user')
+      .map((m) => String(m.content || ''));
+    // 排除当前这条本身，只与更早的任务比
+    const idx = userTexts.lastIndexOf(text);
+    const prior = idx >= 0 ? userTexts.slice(0, idx) : userTexts.slice(0, -1);
+    const hit = detectRepeat(prior, text);
+    if (!hit.matched) return;
+    const fp = convKey + '|' + text.trim().slice(0, 60);
+    if (repeatHintDoneRef.current.has(fp)) return;
+    repeatHintConvRef.current = convKey;
+    setShowRepeatHint(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStreaming]);
+
+  const acceptRepeatHint = () => {
+    setShowRepeatHint(false);
+    // 标记，避免同一任务反复提示
+    const convKey = String(conversationId || id || '');
+    const lastUser = [...(useChatStore.getState().messages || [])].reverse().find((m) => m.role === 'user');
+    if (lastUser) repeatHintDoneRef.current.add(convKey + '|' + String(lastUser.content || '').trim().slice(0, 60));
+    repeatHintConvRef.current = '';
+    handleExtractSkill();
+  };
+
+  const dismissRepeatHint = () => {
+    setShowRepeatHint(false);
+    const convKey = String(conversationId || id || '');
+    const lastUser = [...(useChatStore.getState().messages || [])].reverse().find((m) => m.role === 'user');
+    if (lastUser) repeatHintDoneRef.current.add(convKey + '|' + String(lastUser.content || '').trim().slice(0, 60));
+    repeatHintConvRef.current = '';
   };
 
   const handleRetry = async (failedMsgId: string) => {
@@ -1818,6 +1877,35 @@ function ChatDetailScreenInner() {
           />
         ) : null}
         </View>
+        {showRepeatHint ? (
+          <View style={[
+            { marginHorizontal: 12, marginBottom: 8, borderRadius: 14, borderWidth: 1, padding: 12,
+              backgroundColor: isDark ? '#1e293b' : '#fff', borderColor: isDark ? '#334155' : '#e5e7eb' },
+          ]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Text style={{ fontSize: 18, marginRight: 6 }}>✨</Text>
+              <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: isDark ? '#f1f5f9' : '#0f172a' }}>
+                这个流程好像做过不止一次
+              </Text>
+              <TouchableOpacity onPress={dismissRepeatHint} hitSlop={{top:8,bottom:8,left:8,right:8}}>
+                <Ionicons name="close" size={18} color={isDark ? '#94a3b8' : '#6b7280'} />
+              </TouchableOpacity>
+            </View>
+            <Text style={{ marginTop: 6, fontSize: 13, color: isDark ? '#94a3b8' : '#6b7280', lineHeight: 18 }}>
+              要不要让 AI 把它提炼成一个技能？下次一键引用，不用重复描述。
+            </Text>
+            <View style={{ flexDirection: 'row', marginTop: 10 }}>
+              <TouchableOpacity onPress={acceptRepeatHint} style={{
+                backgroundColor: Colors.primary, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 10, marginRight: 8 }}>
+                <Text style={{ color: '#fff', fontSize: 13, fontWeight: '600' }}>提炼成技能</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={dismissRepeatHint} style={{
+                paddingHorizontal: 16, paddingVertical: 8, borderRadius: 10 }}>
+                <Text style={{ color: isDark ? '#94a3b8' : '#6b7280', fontSize: 13 }}>暂不需要</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
         <ChatInput
         onSend={handleSend}
         onStop={handleStop}
