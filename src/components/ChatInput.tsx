@@ -7,6 +7,10 @@ import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { getBearerToken } from '../api/client';
+import { skillApi, Skill } from '../api/skill';
+import SkillLibrary from './SkillLibrary';
+import SkillEditor from './SkillEditor';
+import SkillChip from './SkillChip';
 
 import { RUNTIME_BASE as API_BASE } from '../config/runtime';
 
@@ -53,6 +57,7 @@ interface ChatInputProps {
   quotedMessage?: QuotedMessage | null;
   onClearQuote?: () => void;
   initialText?: string;
+  userId?: string;
 }
 
 const stripMd = (text: string): string => {
@@ -88,12 +93,35 @@ const fileNameFromUri = (uri: string, fallback: string): string => {
   return fallback;
 };
 
+// Build the directive block that makes the AI follow a referenced skill.
+// Pure text injection; does not change any rendering path.
+const buildSkillDirective = (sk: Skill, userText: string): string => {
+  const paramLines = sk.params
+    .map((p) => `- ${p.name}${p.required ? '（必填）' : ''}: ${p.desc || ''}${p.example ? ` 示例：${p.example}` : ''}`)
+    .join('\n');
+  const toolLine = sk.tools.length ? `本技能可能调用工具：${sk.tools.join('、')}。` : '';
+  return (
+`【技能引用】${sk.icon} ${sk.name}
+请严格按以下技能 SOP 执行本次任务；步骤为纲，若某工具不可用可等价降级，不要偏离目标。
+${toolLine}
+${paramLines ? `参数说明：\n${paramLines}\n` : ''}
+——技能 SOP 开始——
+${sk.content}
+——技能 SOP 结束——
+
+用户本次要求：${userText || '请按技能默认目标执行'}`
+  );
+};
+
 export const ChatInput: React.FC<ChatInputProps> = ({
   onSend, onStop, isStreaming, isDark, placeholder,
   onFileUploaded, conversationId, patToken,
-  quotedMessage, onClearQuote, initialText,
+  quotedMessage, onClearQuote, initialText, userId,
 }) => {
   const [text, setText] = useState('');
+  const [skill, setSkill] = useState<Skill | null>(null);
+  const [showSkillLib, setShowSkillLib] = useState(false);
+  const [showSkillEditor, setShowSkillEditor] = useState(false);
 
   React.useEffect(() => {
     if (initialText && !text) {
@@ -207,11 +235,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const handleSend = () => {
     if (isSendingRef.current) return;
     const trimmed = text.trim();
-    if (!trimmed && attachedFiles.length === 0) return;
+    if (!trimmed && attachedFiles.length === 0 && !skill) return;
     isSendingRef.current = true;
-    onSend(trimmed, attachedFiles.length > 0 ? attachedFiles : undefined);
+    const usedSkill = skill;
+    const outgoing = usedSkill ? buildSkillDirective(usedSkill, trimmed) : trimmed;
+    onSend(outgoing, attachedFiles.length > 0 ? attachedFiles : undefined);
+    if (usedSkill) skillApi.incrementCall(usedSkill.id, usedSkill);
     setText('');
     setAttachedFiles([]);
+    setSkill(null);
     setTimeout(() => { isSendingRef.current = false; }, 500);
   };
 
@@ -447,7 +479,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       handleSend();
       return;
     }
-
     isSendingRef.current = true;
     setUploading(true);
     const uploadedUrls: string[] = [];
@@ -514,23 +545,33 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         fileId: '',
       }))
       .filter(m => m.url);
-    onSend(msgText, fileMeta, undefined);
+    const usedSkill = skill;
+    const finalText = usedSkill ? buildSkillDirective(usedSkill, msgText) : msgText;
+    onSend(finalText, fileMeta, undefined);
+    if (usedSkill) skillApi.incrementCall(usedSkill.id, usedSkill);
     setText('');
     setAttachedFiles([]);
+    setSkill(null);
   };
 
   const bgColor = isDark ? Colors.surfaceDark : '#fff';
   const borderColor = isDark ? Colors.borderDark : Colors.borderLight;
   const inputColor = isDark ? Colors.textInverse : Colors.text;
-  const hasContent = text.trim() || attachedFiles.length > 0;
+  const hasContent = text.trim() || attachedFiles.length > 0 || !!skill;
 
   const quoteLabel = quotedMessage ? (quotedMessage.role === 'user' ? '我' : 'AI') : '';
   const quotePreview = quotedMessage ? stripMd(quotedMessage.content).substring(0, 100) : '';
+
+  const openSkillLibrary = () => {
+    setShowAttachMenu(false);
+    setShowSkillLib(true);
+  };
 
   const attachMenuItems = [
     { icon: 'image-outline', label: '照片', color: '#3b82f6', action: handleImagePicker },
     { icon: 'camera-outline', label: '拍照', color: '#10b981', action: handleCamera },
     { icon: 'document-outline', label: '文件', color: '#f59e0b', action: handleDocumentPicker },
+    { icon: 'sparkles', label: '技能', color: Colors.primary, action: openSkillLibrary },
   ];
 
   return (
@@ -594,6 +635,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               </View>
             );
           })}
+        </View>
+      )}
+
+      {skill && (
+        <View style={styles.skillChipWrap}>
+          <SkillChip skill={skill} onRemove={() => setSkill(null)} />
         </View>
       )}
 
@@ -692,6 +739,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           </View>
         </TouchableOpacity>
       </Modal>
+
+      <SkillLibrary
+        visible={showSkillLib}
+        userId={userId || ''}
+        onClose={() => setShowSkillLib(false)}
+        onCreate={() => { setShowSkillLib(false); setShowSkillEditor(true); }}
+        onPick={(sk) => { setSkill(sk); setShowSkillLib(false); }}
+      />
+      <SkillEditor
+        visible={showSkillEditor}
+        userId={userId || ''}
+        onClose={() => setShowSkillEditor(false)}
+        onSaved={() => { setShowSkillEditor(false); setShowSkillLib(true); }}
+      />
     </View>
   );
 };
@@ -806,4 +867,5 @@ const styles = StyleSheet.create({
   recordingTime: {
     fontSize: 13, color: Colors.danger, fontWeight: '600',
   },
+  skillChipWrap: { marginBottom: 8, paddingHorizontal: 2 },
 });
