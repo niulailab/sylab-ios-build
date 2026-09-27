@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "===== TIME ====="; date
-PAT="pat_fb5f8dccaaf858b781524ff3788686c76a46a4bfe95736eb94441da0d40e6ed4"
+PAT="pat_fb5f8dccaaf858b78152bff3788686c76a46a4bfe95736eb94441da0d40e6ed4"
 CID=7688397794641444864
 for P in 1 2 3; do
 curl -s -m 10 -X POST "http://127.0.0.1:9091/v1/conversation/message/list" \
