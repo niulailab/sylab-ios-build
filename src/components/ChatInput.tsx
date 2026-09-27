@@ -11,6 +11,7 @@ import { skillApi, Skill } from '../api/skill';
 import SkillLibrary from './SkillLibrary';
 import SkillEditor from './SkillEditor';
 import SkillChip from './SkillChip';
+import { consumePendingSkill } from '../store/pendingSkill';
 
 import { RUNTIME_BASE as API_BASE } from '../config/runtime';
 
@@ -57,6 +58,7 @@ interface ChatInputProps {
   quotedMessage?: QuotedMessage | null;
   onClearQuote?: () => void;
   initialText?: string;
+  initialSkill?: import('../api/skill').Skill | null;
   userId?: string;
 }
 
@@ -116,7 +118,7 @@ ${sk.content}
 export const ChatInput: React.FC<ChatInputProps> = ({
   onSend, onStop, isStreaming, isDark, placeholder,
   onFileUploaded, conversationId, patToken,
-  quotedMessage, onClearQuote, initialText, userId,
+  quotedMessage, onClearQuote, initialText, userId, initialSkill,
 }) => {
   const [text, setText] = useState('');
   const [skill, setSkill] = useState<Skill | null>(null);
@@ -128,6 +130,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       setText(initialText);
     }
   }, [initialText]);
+
+  // 进入页面时若带了待引用技能（技能 Tab / 其它入口），一次性消费
+  React.useEffect(() => {
+    if (initialSkill) {
+      setSkill(initialSkill);
+    } else {
+      const pending = consumePendingSkill();
+      if (pending) setSkill(pending);
+    }
+    // 仅在挂载时消费一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -562,9 +576,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const quoteLabel = quotedMessage ? (quotedMessage.role === 'user' ? '我' : 'AI') : '';
   const quotePreview = quotedMessage ? stripMd(quotedMessage.content).substring(0, 100) : '';
 
+  // iOS 原生 Modal 不允许“一个还没关完、另一个立刻打开”，否则转场冲突，
+  // 表现为新弹层不出现、只剩半透明遮罩盖住输入框（看似被锁死）。
   const openSkillLibrary = () => {
     setShowAttachMenu(false);
-    setShowSkillLib(true);
+    if (Platform.OS === 'web') {
+      setShowSkillLib(true);
+    } else {
+      setTimeout(() => setShowSkillLib(true), 320);
+    }
   };
 
   const attachMenuItems = [

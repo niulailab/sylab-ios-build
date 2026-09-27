@@ -75,6 +75,13 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="skills"
+        options={{
+          title: '技能',
+          tabBarIcon: ({ color, size }) => <Ionicons name="sparkles" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{
           title: '我的',
