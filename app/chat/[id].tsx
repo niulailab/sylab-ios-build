@@ -1775,6 +1775,7 @@ function ChatDetailScreenInner() {
         quotedMessage={quotedMessage}
         onClearQuote={() => setQuotedMessage(null)}
         initialText={prompt as string | undefined}
+        userId={user?.id || ''}
       />
 
       </View>
