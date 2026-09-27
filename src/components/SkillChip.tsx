@@ -3,8 +3,8 @@
  */
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Skill } from '../../api/skill';
-import { Colors } from '../../constants';
+import { Skill } from '../api/skill';
+import { Colors } from '../constants';
 
 interface Props {
   skill: Skill;
