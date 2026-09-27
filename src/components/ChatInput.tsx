@@ -95,8 +95,8 @@ const fileNameFromUri = (uri: string, fallback: string): string => {
   return fallback;
 };
 
-// Build the directive block that makes the AI follow a referenced skill.
-export const SKILL_DIRECTIVE_PREFIX = '【技能引用】';
+import { SKILL_DIRECTIVE_PREFIX } from './SkillRefCard';
+export { SKILL_DIRECTIVE_PREFIX };
 // Pure text injection; does not change any rendering path.
 const buildSkillDirective = (sk: Skill, userText: string): string => {
   const paramLines = sk.params

@@ -5,6 +5,7 @@ import { getBearerToken } from '../api/client';
 
 import { Colors, Spacing, BorderRadius, FontSize } from '../constants/theme';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import SkillRefCard, { SKILL_DIRECTIVE_PREFIX } from './SkillRefCard';
 import { ZoomableImage } from './ImageLightbox';
 import { Ionicons } from '@expo/vector-icons';
 import type { ChatMessage, ToolCall } from '../types/api';
@@ -299,7 +300,9 @@ export const MessageBubble = React.memo<MessageBubbleProps>(({ message, isDark, 
               {_imgText ? <Text style={[styles.userText, { color: textColor, marginTop: 6 }]} selectable>{_imgText}</Text> : null}
             </View>
           );
-        })() : isUser ? (
+        })() : isUser && String(message.content || '').startsWith(SKILL_DIRECTIVE_PREFIX) ? (
+          <SkillRefCard content={message.content} textColor={textColor} isDark={isDark} />
+        ) : isUser ? (
           <Text style={[styles.userText, { color: textColor }]} selectable>{message.content}</Text>
         ) : (
           <MarkdownRenderer content={message.content} isDark={isDark} />
