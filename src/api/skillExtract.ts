@@ -56,6 +56,53 @@ function extractJson(text: string): any {
   return JSON.parse(t);
 }
 
+/** 模型偶发返回被截断/未闭合的 JSON：尝试自动补齐括号、引号修复。
+ *  修复成功返回对象；无法修复返回 null。 */
+function repairJson(text: string): any {
+  let t = String(text || '').trim();
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+  const s0 = t.indexOf('{');
+  if (s0 >= 0) t = t.slice(s0);
+  if (!t) return null;
+  try { return JSON.parse(t); } catch {}
+  t = t.replace(/[,:\s]*$/, '');
+  const open: string[] = [];
+  let inStr = false, esc = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') open.push('}');
+    else if (ch === '[') open.push(']');
+    else if (ch === '}' || ch === ']') open.pop();
+  }
+  let fixed = t + (inStr ? '"' : '') + open.slice().reverse().join('');
+  try { return JSON.parse(fixed); } catch {}
+  const cut = fixed.replace(/[,，]?\s*"[^"]*"?\s*:?\s*[^,}\]]*$/, '');
+  if (cut !== fixed) {
+    const o2: string[] = [];
+    let is2 = false, e2 = false;
+    for (const ch of cut) {
+      if (is2) { if (e2) e2 = false; else if (ch === '\\') e2 = true; else if (ch === '"') is2 = false; continue; }
+      if (ch === '"') is2 = true;
+      else if (ch === '{') o2.push('}');
+      else if (ch === '[') o2.push(']');
+      else if (ch === '}' || ch === ']') o2.pop();
+    }
+    const f2 = cut + (is2 ? '"' : '') + o2.slice().reverse().join('');
+    try { return JSON.parse(f2); } catch {}
+  }
+  return null;
+}
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 function normalizeDraft(obj: any): SkillDraft | null {
   if (!obj || obj.empty) return null;
   const params: SkillParam[] = Array.isArray(obj.params)
@@ -85,57 +132,92 @@ function normalizeDraft(obj: any): SkillDraft | null {
   };
 }
 
+const MAX_EXTRACT_ATTEMPTS = 3;
+
 export function extractSkillFromMessages(
   messages: ExtractableMessage[],
   userId: string,
   callbacks: {
     onProgress?: (delta: string) => void;
+    onAttempt?: (n: number) => void;
     onDone: (draft: SkillDraft | null, emptyReason?: string) => void;
     onError: (e: Error) => void;
   },
 ): { abort: () => void } {
-  let acc = '';
-  let finished = false;
   const bearer = getBearerToken() || '';
+  let aborted = false;
+  let currentAbort: (() => void) | null = null;
 
-  const stream = sendMessageStream(
-    {
-      bot_id: SKILL_EXTRACT_BOT_ID,
-      user_id: userId || 'extract',
-      stream: true,
-      auto_save_history: false,
-      additional_messages: [
-        { role: 'user', content: buildPrompt(messages), content_type: 'text' },
-      ],
-    },
-    bearer,
-    {
-      onDelta: (d) => {
-        acc += d;
-        callbacks.onProgress?.(d);
+  const runAttempt = (attempt: number) => {
+    if (aborted) return;
+    let acc = '';
+    let finished = false;
+    callbacks.onAttempt?.(attempt);
+
+    const stream = sendMessageStream(
+      {
+        bot_id: SKILL_EXTRACT_BOT_ID,
+        user_id: userId || 'extract',
+        stream: true,
+        auto_save_history: false,
+        additional_messages: [
+          { role: 'user', content: buildPrompt(messages), content_type: 'text' },
+        ],
       },
-      onComplete: () => {
-        if (finished) return;
-        finished = true;
-        try {
-          const obj = extractJson(acc);
-          if (obj?.empty) {
-            callbacks.onDone(null, String(obj.reason || '这段对话没有可复用流程'));
+      bearer,
+      {
+        onDelta: (d) => {
+          acc += d;
+          callbacks.onProgress?.(d);
+        },
+        onComplete: () => {
+          if (finished || aborted) return;
+          finished = true;
+          let obj: any = null;
+          let parsed = false;
+          try {
+            obj = extractJson(acc);
+            parsed = true;
+          } catch {
+            // 模型可能返回截断/未闭合 JSON：先尝试自动修复
+            const repaired = repairJson(acc);
+            if (repaired) { obj = repaired; parsed = true; }
+          }
+          if (parsed) {
+            if (obj?.empty) {
+              callbacks.onDone(null, String(obj.reason || '这段对话没有可复用流程'));
+              return;
+            }
+            const draft = normalizeDraft(obj);
+            if (draft) { callbacks.onDone(draft); return; }
+          }
+          // 解析/修复都失败或草案缺字段：自动重试，最多 MAX_EXTRACT_ATTEMPTS 次
+          if (attempt < MAX_EXTRACT_ATTEMPTS) {
+            delay(400).then(() => runAttempt(attempt + 1));
             return;
           }
-          const draft = normalizeDraft(obj);
-          callbacks.onDone(draft);
-        } catch (e: any) {
-          callbacks.onError(new Error('技能提案解析失败，请重试'));
-        }
+          callbacks.onError(new Error('技能提案解析失败，已自动重试仍未成功，请稍后再试'));
+        },
+        onError: (e) => {
+          if (finished || aborted) return;
+          finished = true;
+          if (attempt < MAX_EXTRACT_ATTEMPTS) {
+            delay(400).then(() => runAttempt(attempt + 1));
+            return;
+          }
+          callbacks.onError(e);
+        },
       },
-      onError: (e) => {
-        if (finished) return;
-        finished = true;
-        callbacks.onError(e);
-      },
-    },
-  );
+    );
+    currentAbort = stream.abort;
+  };
 
-  return { abort: stream.abort };
+  runAttempt(1);
+
+  return {
+    abort: () => {
+      aborted = true;
+      try { currentAbort?.(); } catch {}
+    },
+  };
 }
