@@ -7,6 +7,10 @@ on:
         description: "repo-relative remote script under scripts/"
         required: true
         default: "scripts/fix2.sh"
+      extra_file:
+        description: "optional repo-relative file to also scp to /tmp/_extra"
+        required: false
+        default: ""
 
 jobs:
   run:
@@ -20,6 +24,11 @@ jobs:
           SSH_PASS: ${{ secrets.SSH_PASS_NEW }}
         run: |
           S="${{ github.event.inputs.script }}"
+          E="${{ github.event.inputs.extra_file }}"
+          if [ -n "$E" ]; then
+            sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              "$E" root@36.137.84.216:/tmp/_extra
+          fi
           sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             "$S" root@36.137.84.216:/tmp/_run.sh
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
