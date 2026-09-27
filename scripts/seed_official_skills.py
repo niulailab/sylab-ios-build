@@ -13,17 +13,22 @@ def post(path, payload):
         headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=30) as r:
         body = json.loads(r.read().decode("utf-8"))
+    # 服务端错误必须抛出，禁止静默当空集
+    if isinstance(body, dict) and body.get("code") not in (None, 0, 200):
+        raise RuntimeError("service error: %s" % body.get("msg"))
     # 统一解包：data 可能是 JSON 字符串或对象
     data = body.get("data", body)
-    if isinstance(data, str):
-        try: data = json.loads(data)
-        except Exception: pass
+    for _ in range(3):
+        if isinstance(data, str):
+            try: data = json.loads(data)
+            except Exception: break
+        else: break
     return data
 
 def get_existing_ids():
     data = post("/memory/search", {
         "agent_id": AGENT, "category": "skill",
-        "tags": ["skill", "official"], "limit": 200
+        "tags": ["skill", "official"], "limit": 100
     })
     ids = set()
     for m in (data.get("memories", []) if isinstance(data, dict) else []):
