@@ -18,7 +18,7 @@ import { sendMessageStream } from '../../src/api/sse';
 import { queueManager } from '../../src/queue/queueTaskManager';
 import { AppEvents, subscribe } from '../../src/utils/events';
 import { MessageBubble } from '../../src/components/MessageBubble';
-import { ChatInput, getPendingFiles, clearPendingFiles } from '../../src/components/ChatInput';
+import { ChatInput, getPendingFiles, clearPendingFiles, SKILL_DIRECTIVE_PREFIX } from '../../src/components/ChatInput';
 import { EmptyState } from '../../src/components/EmptyState';
 import { SkeletonLoader } from '../../src/components/SkeletonLoader';
 import { TypingIndicator, getToolLabel } from '../../src/components/TypingIndicator';
@@ -1220,7 +1220,8 @@ function ChatDetailScreenInner() {
       return;
     }
     // 口头指令：要求现场制作并保存技能 → 拦截，不发给普通对话
-    const voice = parseVoiceSkillIntent(text);
+    const isSkillDirective = text.startsWith(SKILL_DIRECTIVE_PREFIX);
+    const voice = isSkillDirective ? { hit: false, name: '' } : parseVoiceSkillIntent(text);
     if (voice.hit) {
       handleVoiceCreateSkill(text, voice.name);
       return;

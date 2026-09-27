@@ -96,6 +96,7 @@ const fileNameFromUri = (uri: string, fallback: string): string => {
 };
 
 // Build the directive block that makes the AI follow a referenced skill.
+export const SKILL_DIRECTIVE_PREFIX = '【技能引用】';
 // Pure text injection; does not change any rendering path.
 const buildSkillDirective = (sk: Skill, userText: string): string => {
   const paramLines = sk.params
@@ -103,7 +104,7 @@ const buildSkillDirective = (sk: Skill, userText: string): string => {
     .join('\n');
   const toolLine = sk.tools.length ? `本技能可能调用工具：${sk.tools.join('、')}。` : '';
   return (
-`【技能引用】${sk.icon} ${sk.name}
+`${SKILL_DIRECTIVE_PREFIX}${sk.icon} ${sk.name}
 请严格按以下技能 SOP 执行本次任务；步骤为纲，若某工具不可用可等价降级，不要偏离目标。
 ${toolLine}
 ${paramLines ? `参数说明：\n${paramLines}\n` : ''}
