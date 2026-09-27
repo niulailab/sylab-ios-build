@@ -26,6 +26,8 @@ import { GenerationPlaceholder } from '../../src/components/GenerationPlaceholde
 import { TaskStatusCard, getToolMeta } from '../../src/components/TaskStatusCard';
 import DagProgressCard from '../../src/components/DagProgressCard';
 import { Ionicons } from '@expo/vector-icons';
+import SkillEditor from '../../src/components/SkillEditor';
+import { extractSkillFromMessages, SkillDraft } from '../../src/api/skillExtract';
 import type { ChatMessage } from '../../src/types/api';
 
 // Safe Clipboard wrapper
@@ -528,6 +530,11 @@ function ChatDetailScreenInner() {
   };
 
   const { user, patToken, isRestoring } = useAuthStore();
+  const [extracting, setExtracting] = useState(false);
+  const [extractErr, setExtractErr] = useState('');
+  const [draftSkill, setDraftSkill] = useState<SkillDraft | null>(null);
+  const [showDraftEditor, setShowDraftEditor] = useState(false);
+  const abortExtractRef = useRef<null | { abort: () => void }>(null);
   const userName = (() => {
     const n = user?.name || '';
     return /^\d+$/.test(n.trim()) ? '用户' : (n || '用户');
@@ -909,13 +916,16 @@ function ChatDetailScreenInner() {
           <TouchableOpacity onPress={() => setShowSearch(!showSearch)}>
             <Ionicons name={showSearch ? "close" : "search"} size={22} color="#6030ff" />
           </TouchableOpacity>
+          <TouchableOpacity onPress={handleExtractSkill} disabled={extracting}>
+            <Ionicons name="sparkles" size={20} color="#6030ff" />
+          </TouchableOpacity>
           <TouchableOpacity onPress={() => router.push(`/projects/${conversationId || id}`)}>
             <Ionicons name="folder" size={22} color="#6030ff" />
           </TouchableOpacity>
         </View>
       ),
     });
-  }, [botName, conversationId, id]);
+  }, [botName, conversationId, id, extracting]);
 
   // Track last processed conversation to avoid re-fetching when user changes
   const lastProcessedConvRef = useRef<string | null>(null);
@@ -1397,6 +1407,49 @@ function ChatDetailScreenInner() {
     );
   };
 
+  // 把当前会话提炼成技能：AI 产出提案 -> 弹编辑器预填 -> 用户确认才入库
+  const handleExtractSkill = () => {
+    const source = (useChatStore.getState().messages || [])
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .filter((m) => !/task_id|任务ID|进度[：:]?\s*\d+%|视频正在生成/i.test(m.content || ''))
+      .slice(-30)
+      .map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: String(m.content || ''),
+      }))
+      .filter((m) => m.content.trim());
+    if (source.length < 2) {
+      Alert.alert('内容太少', '先多聊几轮，再提炼成技能');
+      return;
+    }
+    setExtractErr('');
+    setExtracting(true);
+    abortExtractRef.current = extractSkillFromMessages(source, user?.id || '', {
+      onDone: (draft, reason) => {
+        setExtracting(false);
+        abortExtractRef.current = null;
+        if (!draft) {
+          Alert.alert('暂无可提炼流程', reason || '这段对话没有可复用的固定流程');
+          return;
+        }
+        setDraftSkill(draft);
+        setShowDraftEditor(true);
+      },
+      onError: (e) => {
+        setExtracting(false);
+        abortExtractRef.current = null;
+        setExtractErr(e?.message || '提炼失败');
+        Alert.alert('提炼失败', e?.message || '请稍后重试');
+      },
+    });
+  };
+
+  const handleCancelExtract = () => {
+    try { abortExtractRef.current?.abort(); } catch {}
+    abortExtractRef.current = null;
+    setExtracting(false);
+  };
+
   const handleRetry = async (failedMsgId: string) => {
     const failedMsg = messages.find(m => m.id === failedMsgId);
     if (!failedMsg) return;
@@ -1778,6 +1831,33 @@ function ChatDetailScreenInner() {
         userId={user?.id || ''}
       />
 
+      {/* AI 提炼技能中 */}
+      <Modal visible={extracting} transparent animationType="fade" onRequestClose={handleCancelExtract}>
+        <View style={extractStyles.overlay}>
+          <View style={extractStyles.box}>
+            <ActivityIndicator color={Colors.primary} />
+            <Text style={extractStyles.title}>正在提炼可复用流程…</Text>
+            <Text style={extractStyles.sub}>AI 会生成技能提案，需你确认后才入库</Text>
+            <TouchableOpacity onPress={handleCancelExtract} style={extractStyles.cancel}>
+              <Text style={extractStyles.cancelTxt}>取消</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 提案预填编辑器：用户确认/修改后保存为私有技能 */}
+      <SkillEditor
+        visible={showDraftEditor}
+        userId={user?.id || ''}
+        draft={draftSkill}
+        onClose={() => { setShowDraftEditor(false); setDraftSkill(null); }}
+        onSaved={() => {
+          setShowDraftEditor(false);
+          setDraftSkill(null);
+          Alert.alert('已入库', '技能已保存，可在「技能」Tab 或 ➕号中引用');
+        }}
+      />
+
       </View>
 
       {/* Bot selector modal */}
@@ -1964,3 +2044,14 @@ export default function ChatDetailScreen() {
   );
 }
 
+const extractStyles = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center' },
+  box: {
+    width: '78%', backgroundColor: Colors.surface, borderRadius: 16, paddingVertical: 24, paddingHorizontal: 20,
+    alignItems: 'center',
+  },
+  title: { fontSize: 15, fontWeight: '700', color: Colors.text, marginTop: 14 },
+  sub: { fontSize: 12, color: Colors.textTertiary, marginTop: 6, textAlign: 'center' },
+  cancel: { marginTop: 16, paddingHorizontal: 18, paddingVertical: 8, borderRadius: 8, backgroundColor: Colors.surfaceSecondary },
+  cancelTxt: { fontSize: 13, color: Colors.textSecondary, fontWeight: '600' },
+});

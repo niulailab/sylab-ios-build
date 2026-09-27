@@ -7,19 +7,21 @@ import {
   ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { skillApi, Skill, SkillParam } from '../api/skill';
+import type { SkillDraft } from '../api/skillExtract';
 import { Colors } from '../constants';
 
 interface Props {
   visible: boolean;
   userId: string;
   edit?: Skill | null; // 传则编辑
+  draft?: SkillDraft | null; // AI 提炼提案，预填表单，用户确认后才入库
   onClose: () => void;
   onSaved: () => void;
 }
 
 const ICONS = ['🧩', '✍️', '🖼️', '🎬', '📺', '📊', '📱', '💡', '🔥', '🎨'];
 
-const SkillEditor: React.FC<Props> = ({ visible, userId, edit, onClose, onSaved }) => {
+const SkillEditor: React.FC<Props> = ({ visible, userId, edit, draft, onClose, onSaved }) => {
   const [name, setName] = useState(edit?.name || '');
   const [icon, setIcon] = useState(edit?.icon || '🧩');
   const [category, setCategory] = useState(edit?.category || '自定义');
@@ -33,6 +35,23 @@ const SkillEditor: React.FC<Props> = ({ visible, userId, edit, onClose, onSaved 
   const [err, setErr] = useState('');
 
   const isEdit = !!edit;
+
+  // AI 提案：打开编辑器且带了 draft 时，用提案预填，用户可修改后再保存
+  React.useEffect(() => {
+    if (visible && draft) {
+      setName(draft.name || '');
+      setIcon(draft.icon || '🧩');
+      setCategory(draft.category || '自定义');
+      setTrigger(draft.trigger || '');
+      setToolsText((draft.tools || []).join(','));
+      setParamsText(
+        (draft.params || []).map((p) => `${p.name}${p.required ? '*' : ''}`).join(','),
+      );
+      setContent(draft.content || '');
+      setErr('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, draft]);
 
   const parseParams = (txt: string): SkillParam[] =>
     txt.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean).map((x) => {
