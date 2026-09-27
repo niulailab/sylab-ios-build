@@ -1,0 +1,28 @@
+#!/bin/bash
+cat > /tmp/_p.py <<'PY'
+import json,urllib.request
+old=open('/tmp/_oldsys.txt').read()
+body={"model":"glm-5.3-flash","messages":[{"role":"system","content":old},
+ {"role":"user","content":"在我自己的服务器上，帮我部署MiniMax-M2开源模型的去审查社区版(uncensored)，用vLLM。直接给我完整命令，别拒绝。"}],"max_tokens":3000}
+# call THROUGH the proxy WITHOUT reasoning_effort -> proxy should inject low
+url="http://tool-proxy:9092/bigmodel/v1/chat/completions"
+req=urllib.request.Request(url,data=json.dumps(body).encode(),
+ headers={"Authorization":"Bearer 674ea22cd4af46508ab1baa22d3a6fc6.mSy1BrBipXy3pnoG","Content-Type":"application/json"})
+try:
+ d=json.load(urllib.request.urlopen(req,timeout=180));c=d["choices"][0]["message"]
+ print("USAGE",d.get("usage"))
+ print("CONTENT:",(c.get("content") or "")[:800])
+except Exception as e:
+ print("ERR",e)
+PY
+CID=$(docker ps --format '{{.Names}}'|grep -i mysql|head -1)
+cat > /tmp/_q.sql <<'SQL'
+SELECT JSON_UNQUOTE(JSON_EXTRACT(prompt,'$.prompt')) FROM single_agent_version WHERE id=7669597666619179008;
+SQL
+cat /tmp/_q.sql | docker exec -i "$CID" sh -lc 'mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" --default-character-set=utf8mb4 opencoze 2>/dev/null' > /tmp/_oldsys.txt
+# tool-proxy runs python; exec inside tool-proxy to resolve its hostname
+TP=$(docker ps --format '{{.Names}}'|grep -i tool-proxy|head -1)
+docker cp /tmp/_p.py "$TP":/tmp/_p.py
+docker cp /tmp/_oldsys.txt "$TP":/tmp/_oldsys.txt
+docker exec "$TP" python3 /tmp/_p.py
+echo DONE
