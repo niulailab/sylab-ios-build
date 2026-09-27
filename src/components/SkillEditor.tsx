@@ -72,8 +72,8 @@ const SkillEditor: React.FC<Props> = ({ visible, userId, edit, onClose, onSaved 
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={s.backdrop}>
-        <View style={s.sheet}>
+      <Pressable style={s.backdrop} onPress={onClose}>
+        <Pressable style={s.sheet} onPress={(e: any) => e?.stopPropagation?.()}>
           <View style={s.header}>
             <Text style={s.title}>{isEdit ? '编辑技能' : '新建技能'}</Text>
             <Pressable hitSlop={8} onPress={onClose}><Text style={s.close}>✕</Text></Pressable>
@@ -123,8 +123,8 @@ const SkillEditor: React.FC<Props> = ({ visible, userId, edit, onClose, onSaved 
               {saving ? <ActivityIndicator color="#fff" /> : <Text style={s.saveTxt}>{isEdit ? '保存修改' : '保存技能'}</Text>}
             </Pressable>
           </ScrollView>
-        </View>
-      </View>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 };

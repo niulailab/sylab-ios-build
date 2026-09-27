@@ -146,6 +146,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [uploading, setUploading] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const inputRef = useRef<TextInput>(null);
+  const pendingAfterMenuRef = useRef<null | (() => void)>(null);
   const isSendingRef = useRef(false);
   const [inputHeight, setInputHeight] = useState(Platform.OS === 'web' ? 40 : 24);
   const [isRecording, setIsRecording] = useState(false);
@@ -578,13 +579,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   // iOS 原生 Modal 不允许“一个还没关完、另一个立刻打开”，否则转场冲突，
   // 表现为新弹层不出现、只剩半透明遮罩盖住输入框（看似被锁死）。
+  // 确定性方案：点技能只“登记意图 + 关菜单”，由附件菜单 onDismiss
+  //（真正关完）回调里再开技能库；web 无此限制直接开。
   const openSkillLibrary = () => {
-    setShowAttachMenu(false);
     if (Platform.OS === 'web') {
+      setShowAttachMenu(false);
       setShowSkillLib(true);
-    } else {
-      setTimeout(() => setShowSkillLib(true), 320);
+      return;
     }
+    pendingAfterMenuRef.current = () => setShowSkillLib(true);
+    setShowAttachMenu(false);
+    // 兜底：极端情况下 onDismiss 不触发也不会卡死
+    setTimeout(() => {
+      if (pendingAfterMenuRef.current) {
+        pendingAfterMenuRef.current();
+        pendingAfterMenuRef.current = null;
+      }
+    }, 600);
+  };
+
+  const handleAttachMenuDismissed = () => {
+    const fn = pendingAfterMenuRef.current;
+    pendingAfterMenuRef.current = null;
+    if (fn) fn();
   };
 
   const attachMenuItems = [
@@ -735,6 +752,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         visible={showAttachMenu}
         transparent
         animationType="fade"
+        onDismiss={handleAttachMenuDismissed}
         onRequestClose={() => setShowAttachMenu(false)}
       >
         <TouchableOpacity

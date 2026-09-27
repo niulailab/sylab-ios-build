@@ -112,8 +112,8 @@ const SkillLibrary: React.FC<Props> = ({ visible, userId, onClose, onPick, onCre
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={s.backdrop}>
-        <View style={s.sheet}>
+      <Pressable style={s.backdrop} onPress={onClose}>
+        <Pressable style={s.sheet} onPress={(e: any) => e?.stopPropagation?.()}>
           <View style={s.header}>
             <Text style={s.title}>技能库</Text>
             <Pressable hitSlop={8} onPress={onClose}><Text style={s.close}>✕</Text></Pressable>
@@ -168,8 +168,8 @@ const SkillLibrary: React.FC<Props> = ({ visible, userId, onClose, onPick, onCre
               keyboardShouldPersistTaps="handled"
             />
           )}
-        </View>
-      </View>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 };
@@ -178,7 +178,7 @@ const s = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    maxHeight: '88%', paddingHorizontal: 16, paddingTop: 14,
+    height: '78%', maxHeight: '88%', paddingHorizontal: 16, paddingTop: 14,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
   title: { fontSize: 18, fontWeight: '700', color: Colors.text },
