@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set +e
 echo "######## A. port publishing of key containers ########"
-for c in coze-memory-service coze-mysql coze-server coze-nginx 2>/dev/null;do :;done
 docker ps --format '{{.Names}}\t{{.Ports}}' | grep -Ei 'memory|mysql|nginx|server|webui' | head -30
 echo
 echo "######## B. memory port 8900 reachable externally? host listen ########"
