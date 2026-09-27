@@ -66,6 +66,10 @@ jobs:
       - name: Verify deployed
         run: |
           SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          TAG="${{ github.event.inputs.tag }}"
           sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "
-            ls -l /var/www/sylab-ios/sylab-unsigned.ipa; md5sum /var/www/sylab-ios/sylab-unsigned.ipa;
-            curl -sI http://127.0.0.1/sylab-ios/sylab-unsigned.ipa | grep -i content-disposition"
+            ls -l /var/www/sylab-ios/sylab-unsigned.ipa; md5sum /var/www/sylab-ios/sylab-unsigned.ipa"
+          # 通过公网 https 地址校验真实下载名，避免本地根路径取不到 header
+          CD=$(curl -skI --max-time 60 "https://s.symsgf.xyz/sylab-ios/sylab-unsigned.ipa?cb=$(date +%s)" | grep -i 'content-disposition' || true)
+          echo "$CD"
+          echo "$CD" | grep -q "sylab-$TAG.ipa"
