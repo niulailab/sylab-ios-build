@@ -1033,9 +1033,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
           remaining = remaining.slice(first.idx + first.m[0].length);
           continue;
         }
-        // [FIX] 文件链接（Office/PDF/zip 等）：段落文字里跳过，FileDownloadCard 在段落下方块级渲染，
-        // 预览/下载全部 App 内闭环，绝不跳外部浏览器
-        if (pickFileInfo(u) && !/\.md(\?|$)/i.test(u)) {
+        // [FIX] 文件链接（Office/PDF/zip/md 等）：段落文字里跳过，FileDownloadCard 在段落下方块级渲染，
+        // md 卡片含“阅读/下载”，预览/下载全部 App 内闭环，绝不跳外部浏览器
+        if (pickFileInfo(u)) {
           remaining = remaining.slice(first.idx + first.m[0].length);
           continue;
         }
@@ -1089,8 +1089,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
         // [FIX] 此函数仅渲染“内联”节点（所有调用点都在 <Text> 内），禁止返回 <View>：
         // 文件/图片/视频卡片一律作为块级元素在所在行下方单独渲染（见 collectBlockLinks），
         // 否则 <View> 嵌进 <Text> 会被 Yoga 压成内容宽，出现小方块/文字竖排。
-        if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u) || isImageUrl(u) || (pickFileInfo(u) && !/\.md(\?|$)/i.test(u))) {
-          parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { downloadAndShare(u); }}>{first.m[1]}</Text>);
+        // [FIX] 文件（含 .md）/图片/视频：块级卡片已在所在行下方渲染，这里不再重复出内联链接
+        if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u) || isImageUrl(u) || pickFileInfo(u)) {
+          parts.push(<Text key={`${key}-l${k}`} style={{ color: textColor }} onPress={() => { downloadAndShare(u); }}>{first.m[1]}</Text>);
         } else if (/\.md(\?|$)/i.test(u)) {
           parts.push(<Text key={`${key}-l${k}`} style={{ color: '#2563eb', textDecorationLine: 'underline' }} onPress={() => { setMdPreviewUrl(u); }}>{first.m[1]}</Text>);
         } else {
@@ -1115,7 +1116,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
       const label = m[1], url = m[2];
       if (isImageUrl(url)) images.push({ label, url });
       else if (/\.(mp4|webm|mov|m3u8)(\?|$)/i.test(url)) videos.push({ label, url });
-      else if (pickFileInfo(url) && !/\.md(\?|$)/i.test(url)) files.push({ label, url });
+      // [FIX] .md 也归入文件卡片（含“阅读/下载”），不再排除
+      else if (pickFileInfo(url)) files.push({ label, url });
     }
     return { files, videos, images };
   };
@@ -1126,7 +1128,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, isD
     /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
     (whole, label, url) => {
       const u: string = url;
-      if (isImageUrl(u) || /\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u) || (pickFileInfo(u) && !/\.md(\?|$)/i.test(u))) {
+      // [FIX] .md 链接同样只留文字、卡片在下方块级渲染
+      if (isImageUrl(u) || /\.(mp4|webm|mov|m3u8)(\?|$)/i.test(u) || pickFileInfo(u)) {
         return label as string;
       }
       return whole;
