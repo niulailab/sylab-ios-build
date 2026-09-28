@@ -88,39 +88,37 @@ JS
 NEWFN_B64=$(base64 -w0 /tmp/_newfn.js)
 
 python3 - "$F" "$NEWFN_B64" <<'PY'
-import sys, base64
+import sys, base64, re
 f=sys.argv[1]
 newfn=base64.b64decode(sys.argv[2]).decode()
-s=open(f,encoding="utf-8").read()
+lines=open(f,encoding="utf-8").read().split('\n')
 
-old='''async function executePython(code, tempPath, execCwd, timeoutSec = 1800) {
-  fs.writeFileSync(tempPath, code);
-  if (execCwd) opts.cwd = execCwd;
-  return runCmd('python3', [tempPath], opts);
-}'''
-assert s.count(old)==1, "old executePython not unique/found"
-s=s.replace(old,newfn,1)
+# 用正则按行定位 executePython 整块（从函数声明到第一个单独的 }），替换
+out=[]; i=0; replaced=False
+while i < len(lines):
+    if (not replaced) and re.match(r'async function executePython\(', lines[i]):
+        # 找到块结尾：本行之后第一个仅为 '}' 的行
+        j=i+1
+        while j < len(lines) and lines[j].strip() != '}':
+            j+=1
+        out.append(newfn.rstrip('\n'))
+        i=j+1
+        replaced=True
+        continue
+    out.append(lines[i]); i+=1
+assert replaced, "executePython not found"
+s='\n'.join(out)
 
-# runCmd 透传 opts.env
-runcmd_old='''    const proc = exec(`${cmd} ${args.join(' ')}`, {
-      cwd: opts.cwd || WORKSPACE,
-      timeout: (opts.timeout || 1800) * 1000,
-      maxBuffer: 50 * 1024 * 1024,
-    }, (error, stdout, stderr) => {'''
-runcmd_new='''    const proc = exec(`${cmd} ${args.join(' ')}`, {
-      cwd: opts.cwd || WORKSPACE,
-      timeout: (opts.timeout || 1800) * 1000,
-      maxBuffer: 50 * 1024 * 1024,
-      ...(opts.env ? { env: opts.env } : {}),
-    }, (error, stdout, stderr) => {'''
-assert s.count(runcmd_old)==1, "runCmd block not unique/found"
-s=s.replace(runcmd_old,runcmd_new,1)
+# runCmd 透传 opts.env（在 maxBuffer 行后插入）
+import re as _re
+pat=_re.compile(r"(maxBuffer: 50 \* 1024 \* 1024,\n)")
+assert len(pat.findall(s))==1, "runCmd maxBuffer anchor not unique/found"
+s=pat.sub(r"\1      ...(opts.env ? { env: opts.env } : {}),\n", s, count=1)
 
 # 调用处传入 conversationId（execute 路由里变量名是 sessionId）
-call_old="case 'python': case 'python3': case 'py': result = await executePython(code, tempPath, execWorkspace, timeout); break;"
-call_new="case 'python': case 'python3': case 'py': result = await executePython(code, tempPath, execWorkspace, timeout, sessionId); break;"
-assert s.count(call_old)==1, "executePython call site not unique/found"
-s=s.replace(call_old,call_new,1)
+cpat=_re.compile(r"executePython\(code, tempPath, execWorkspace, timeout\);")
+assert len(cpat.findall(s))==1, "executePython call site not unique/found"
+s=cpat.sub("executePython(code, tempPath, execWorkspace, timeout, sessionId);", s, count=1)
 
 open(f,"w",encoding="utf-8").write(s)
 print("patched OK")
