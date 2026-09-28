@@ -1,18 +1,8 @@
-import axios from 'axios';
-import { RUNTIME_BASE as API_BASE } from '../config/runtime';
+import { webApiClient } from './client';
 
-// 定时任务管理：独立 axios，靠 x-session-key 识别真实身份（后端回查 user 表）。
-// 不改动共享 client.ts，避免影响聊天链路。
-function makeClient(sessionKey: string) {
-  return axios.create({
-    baseURL: API_BASE,
-    timeout: 20000,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-session-key': sessionKey,
-    },
-  });
-}
+// 定时任务管理：复用共享 webApiClient（authMode='session'），
+// 原生 Cookie 容器里的 session_key 会自动随请求带上；同时兼容 x-session-key。
+// 这样旧版登录态（本地未存 session_key 字符串、但 Cookie 仍有效）也能正常识别身份。
 
 export interface ScheduledTask {
   task_uuid: string;
@@ -25,49 +15,41 @@ export interface ScheduledTask {
   status: string; // active / paused
 }
 
-interface RawEnvelope {
-  code: number;
-  msg?: string;
-  data?: string | any;
-}
-
-function unwrap(body: RawEnvelope): any {
-  if (!body || (body.code !== 0 && body.code !== 200)) {
-    throw new Error(body?.msg || '请求失败');
-  }
-  // 后端 data 是 JSON 字符串，需要二次解析
-  if (typeof body.data === 'string') {
+// webApiClient 的响应拦截器已解包 {code,data}，这里拿到的 res.data 即后端 data，
+// 后端 data 是 JSON 字符串，需要二次解析。
+function parseData(raw: any): any {
+  if (typeof raw === 'string') {
     try {
-      return JSON.parse(body.data);
+      return JSON.parse(raw);
     } catch {
-      return body.data;
+      return raw;
     }
   }
-  return body.data;
+  return raw;
 }
 
 export const scheduledTasksApi = {
   // 当前用户的全部定时任务（跨会话）
-  async list(sessionKey: string): Promise<{ tasks: ScheduledTask[]; count: number }> {
-    const res = await makeClient(sessionKey).post('/schedule/list', { scope: 'all' });
-    const d = unwrap(res.data);
+  async list(): Promise<{ tasks: ScheduledTask[]; count: number }> {
+    const res = await webApiClient.post('/schedule/list', { scope: 'all' });
+    const d = parseData(res.data);
     return { tasks: d.tasks || [], count: d.count || (d.tasks || []).length };
   },
 
   // 暂停 / 恢复
-  async toggle(sessionKey: string, taskUuid: string, action: 'pause' | 'resume'): Promise<string> {
-    const res = await makeClient(sessionKey).post('/schedule/toggle', {
+  async toggle(taskUuid: string, action: 'pause' | 'resume'): Promise<string> {
+    const res = await webApiClient.post('/schedule/toggle', {
       task_uuid: taskUuid,
       action,
     });
-    return unwrap(res.data)?.summary || '';
+    return parseData(res.data)?.summary || '';
   },
 
   // 删除
-  async remove(sessionKey: string, taskUuid: string): Promise<string> {
-    const res = await makeClient(sessionKey).post('/schedule/delete', {
+  async remove(taskUuid: string): Promise<string> {
+    const res = await webApiClient.post('/schedule/delete', {
       task_uuid: taskUuid,
     });
-    return unwrap(res.data)?.summary || '';
+    return parseData(res.data)?.summary || '';
   },
 };
