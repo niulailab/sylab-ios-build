@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 // 路由映射
 const ROUTE_MAP: Record<string, string> = {
   '工具中心': '/(tabs)/schedule',
+  '定时任务': '/scheduled-tasks',
   '积分明细': '/credits',
   '应用设置': '/settings',
   '帮助与反馈': '/help',
@@ -26,6 +27,7 @@ const MENU_GROUPS = [
     title: '创作工具',
     items: [
       { icon: 'apps-outline', label: '工具中心', desc: 'AI生图/视频/浏览器等快捷工具' },
+      { icon: 'alarm-outline', label: '定时任务', desc: '查看并管理你的定时任务' },
     ],
   },
   {
