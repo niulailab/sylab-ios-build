@@ -6,7 +6,6 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAuthStore } from '../src/store/auth';
 import { scheduledTasksApi, ScheduledTask } from '../src/api/scheduledTasks';
 import { SafeAlert } from '../src/utils/safeAlert';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../src/constants/theme';
@@ -21,21 +20,14 @@ const STATUS_COLOR: Record<string, string> = {
 export default function ScheduledTasksScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { user, sessionId } = useAuthStore();
-
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busyUuid, setBusyUuid] = useState<string | null>(null);
 
   const fetchTasks = useCallback(async () => {
-    if (!sessionId) {
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
     try {
-      const d = await scheduledTasksApi.list(sessionId);
+      const d = await scheduledTasksApi.list();
       setTasks(d.tasks);
     } catch (e: any) {
       SafeAlert.alert('加载失败', e?.message || '请稍后再试');
@@ -43,13 +35,13 @@ export default function ScheduledTasksScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [sessionId]);
+  }, []);
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
   // 开关
   const onToggle = useCallback(async (t: ScheduledTask) => {
-    if (!sessionId || busyUuid) return;
+    if (busyUuid) return;
     const wantPause = t.status === 'active';
     setBusyUuid(t.task_uuid);
     // 乐观更新
@@ -58,7 +50,7 @@ export default function ScheduledTasksScreen() {
         ? { ...x, status: wantPause ? 'paused' : 'active' }
         : x));
     try {
-      await scheduledTasksApi.toggle(sessionId, t.task_uuid, wantPause ? 'pause' : 'resume');
+      await scheduledTasksApi.toggle(t.task_uuid, wantPause ? 'pause' : 'resume');
     } catch (e: any) {
       // 回滚
       setTasks(prev => prev.map(x =>
@@ -69,11 +61,11 @@ export default function ScheduledTasksScreen() {
     } finally {
       setBusyUuid(null);
     }
-  }, [sessionId, busyUuid]);
+  }, [busyUuid]);
 
   // 删除（二次确认）
   const onDelete = useCallback((t: ScheduledTask) => {
-    if (!sessionId || busyUuid) return;
+    if (busyUuid) return;
     SafeAlert.alert(
       '删除定时任务',
       `确定删除「${t.title}」吗？删除后将不再自动执行。`,
@@ -85,7 +77,7 @@ export default function ScheduledTasksScreen() {
           onPress: async () => {
             setBusyUuid(t.task_uuid);
             try {
-              await scheduledTasksApi.remove(sessionId, t.task_uuid);
+              await scheduledTasksApi.remove(t.task_uuid);
               setTasks(prev => prev.filter(x => x.task_uuid !== t.task_uuid));
             } catch (e: any) {
               SafeAlert.alert('删除失败', e?.message || '请稍后再试');
@@ -96,7 +88,7 @@ export default function ScheduledTasksScreen() {
         },
       ],
     );
-  }, [sessionId, busyUuid]);
+  }, [busyUuid]);
 
   const renderItem = ({ item }: { item: ScheduledTask }) => {
     const enabled = item.status === 'active';
