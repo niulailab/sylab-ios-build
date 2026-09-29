@@ -1,22 +1,25 @@
 #!/bin/bash
-cat > /tmp/_vf.py <<'PY'
-import json, urllib.request
-code = '''
-import json
-open("_final.txt","w").write("final inject verify xyz789")
-u = upload_file("_final.txt", object_name="final_test.txt")
-print("UPLOAD code", u.get("code"), "url", u.get("url"))
-l = list_files()
-print("LIST total", l.get("total"))
-d = download_file([f["name"] for f in l["files"] if "final" in f["name"]][0], save_path="_dl.txt")
-print("DOWNLOAD", d.get("code"), open("_dl.txt").read())
-'''
-payload=json.dumps({"code":code,"language":"python","timeout":60,"session_id":"verify_final_1"}).encode()
-req=urllib.request.Request("http://127.0.0.1:9097/execute",data=payload,
-    headers={"Content-Type":"application/json"})
-r=json.loads(urllib.request.urlopen(req,timeout=90).read().decode())
-print(r["data"]["stdout"])
-print("stderr",r["data"]["stderr"][:200])
-PY
-python3 /tmp/_vf.py
+
+echo "### 1. MaxStep 200 二进制验证 ###"
+docker exec coze-server sh -c "strings /app/opencoze 2>/dev/null | grep -iE 'max.?step|max.?iteration|reached max' | head -10"
+echo ""
+echo "--- 环境变量中的step限制 ---"
+docker exec coze-server sh -c "env | grep -iE 'step|iter|turn' " 2>&1 | head -10
+
+echo ""
+echo "### 2. 实际run表统计（找高步数任务）###"
+MP=$(docker exec coze-mysql printenv MYSQL_ROOT_PASSWORD)
+docker exec coze-mysql mysql -uroot -p"$MP" opencoze -N -e "
+SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='opencoze' AND table_name LIKE '%run%';" 2>/dev/null
+
+echo ""
+echo "### 3. 并发视频生成实测 ###"
+# 拷贝测试脚本到容器可访问位置（/tmp挂载为/host-tmp）
+cp /host-tmp/conc_test.py /tmp/conc_test.py 2>/dev/null
+docker exec tool-proxy python3 /host-tmp/conc_test.py 2>&1
+
+echo ""
+echo "### 4. submit日志确认4条 ###"
+docker logs tool-proxy --since 3m 2>&1 | grep "\[VID\] submit" | tail -6
+
 echo "[DONE]"
