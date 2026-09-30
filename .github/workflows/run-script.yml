@@ -22,6 +22,7 @@ jobs:
       - name: Execute remote script
         env:
           SSH_PASS: ${{ secrets.SSH_PASS_NEW }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           S="${{ github.event.inputs.script }}"
           E="${{ github.event.inputs.extra_file }}"
