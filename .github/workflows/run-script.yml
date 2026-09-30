@@ -22,7 +22,6 @@ jobs:
       - name: Execute remote script
         env:
           SSH_PASS: ${{ secrets.SSH_PASS_NEW }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           S="${{ github.event.inputs.script }}"
           E="${{ github.event.inputs.extra_file }}"
@@ -33,10 +32,7 @@ jobs:
           sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             "$S" root@36.137.84.216:/tmp/_run.sh
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            root@36.137.84.216 "bash /tmp/_run.sh"
-          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            root@36.137.84.216:/tmp/_sched_result.txt /tmp/_run_output.txt || true
-          cat /tmp/_run_output.txt
+            root@36.137.84.216 "bash /tmp/_run.sh" 2>&1 | tee /tmp/_run_output.txt
       - name: Upload output
         if: always()
         uses: actions/upload-artifact@v4
