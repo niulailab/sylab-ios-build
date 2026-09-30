@@ -1,0 +1,1 @@
+docker logs --tail 200 sylab-nginx 2>&1 | grep -E '/schedule|scheduler' | tail -50
