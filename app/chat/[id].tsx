@@ -929,9 +929,7 @@ function ChatDetailScreenInner() {
           <TouchableOpacity onPress={() => setShowSearch(!showSearch)}>
             <Ionicons name={showSearch ? "close" : "search"} size={22} color="#6030ff" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleExtractSkill} disabled={extracting}>
-            <Ionicons name="sparkles" size={20} color="#6030ff" />
-          </TouchableOpacity>
+
           <TouchableOpacity onPress={() => router.push(`/projects/${conversationId || id}`)}>
             <Ionicons name="folder" size={22} color="#6030ff" />
           </TouchableOpacity>
@@ -1562,10 +1560,8 @@ function ChatDetailScreenInner() {
     const prior = idx >= 0 ? userTexts.slice(0, idx) : userTexts.slice(0, -1);
     const hit = detectRepeat(prior, text);
     if (!hit.matched) return;
-    const fp = convKey + '|' + text.trim().slice(0, 60);
-    if (repeatHintDoneRef.current.has(fp)) return;
-    repeatHintConvRef.current = convKey;
-    setShowRepeatHint(true);
+    // [FIX 2026-09-30] 关闭自动弹窗
+    return;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming]);
 
