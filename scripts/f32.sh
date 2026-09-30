@@ -1,0 +1,12 @@
+#!/bin/bash
+echo "IyAtKi0gY29kaW5nOiB1dGYtOCAtKi0KaW1wb3J0IHN5cywgcHlfY29tcGlsZQpQPSIvcm9vdC9jb3plLXN0dWRpby90b29sLXByb3h5L3NlcnZlci5weSIKcz1vcGVuKFAsZW5jb2Rpbmc9InV0Zi04IikucmVhZCgpCm9sZD0nJycgICAgICAgICAgICAiY29udmVyc2F0aW9uX2lkIjogcm93WyJjb252ZXJzYXRpb25faWQiXSwKICAgICAgICAgICAgImNyZWF0ZWRfYXQiOiByb3dbImNyZWF0ZWRfYXQiXQogICAgICAgIH0pJycnCm5ldz0nJycgICAgICAgICAgICAiY29udmVyc2F0aW9uX2lkIjogcm93WyJjb252ZXJzYXRpb25faWQiXSwKICAgICAgICAgICAgImNyZWF0ZWRfYXQiOiBzdHIocm93WyJjcmVhdGVkX2F0Il0pIGlmIHJvd1siY3JlYXRlZF9hdCJdIGlzIG5vdCBOb25lIGVsc2UgIiIKICAgICAgICB9KScnJwppZiAnImNyZWF0ZWRfYXQiOiBzdHIocm93WyJjcmVhdGVkX2F0Il0pJyBpbiBzOgogICAgcHJpbnQoImFscmVhZHkgcGF0Y2hlZCIpCmVsaWYgb2xkIGluIHM6CiAgICBzPXMucmVwbGFjZShvbGQsbmV3LDEpCiAgICBweV9jb21waWxlLmNvbXBpbGUoUCxkb3JhaXNlPVRydWUpCiAgICBvcGVuKFAsInciLGVuY29kaW5nPSJ1dGYtOCIpLndyaXRlKHMpCiAgICBweV9jb21waWxlLmNvbXBpbGUoUCxkb3JhaXNlPVRydWUpCiAgICBwcmludCgicGF0Y2gyIE9LIikKZWxzZToKICAgIHByaW50KCJGQVRBTCBhbmNob3IiKTsgc3lzLmV4aXQoMikK" | base64 -d > /tmp/p2.py
+python3 /tmp/p2.py
+echo "===== 重启tool-proxy加载补丁 ====="
+docker restart tool-proxy
+sleep 13
+docker ps --format '{{.Names}}\t{{.Status}}' | grep tool-proxy
+echo "===== 复测 list ====="
+sleep 3
+curl -s -m 25 "http://localhost:9092/notifications/list?user_id=2697531370768443&size=3" | head -c 400
+echo ""
+echo "[DONE]"
