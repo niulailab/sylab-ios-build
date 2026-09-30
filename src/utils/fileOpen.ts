@@ -51,7 +51,10 @@ export function formatFileSize(bytes?: number | null): string {
 export async function fetchFileSize(rawUrl: string): Promise<number | null> {
   const url = normalizeServerUrl(rawUrl);
   if (Platform.OS === 'web') return null;
+  // 只接受真正代表文件的响应：状态必须 2xx，避免把错误体长度误判为文件大小
+  // （此前 file_service 对 HEAD 返回 405 + 31 字节错误体，被误显示成 "31 B"）。
   const parseLen = (res: Response): number | null => {
+    if (!res.ok) return null;
     const cr = res.headers.get('Content-Range') || res.headers.get('content-range');
     if (cr && cr.includes('/')) {
       const total = cr.split('/').pop() || '';
@@ -62,14 +65,16 @@ export async function fetchFileSize(rawUrl: string): Promise<number | null> {
     if (len) { const n = parseInt(len, 10); if (!isNaN(n) && n > 0) return n; }
     return null;
   };
-  try {
-    const head = await fetch(url, { method: 'HEAD' });
-    const n = parseLen(head);
-    if (n) return n;
-  } catch {}
+  // file_service 不支持 HEAD(405)，优先 Range GET：服务端忽略 Range 时
+  // 也会在 200 响应里带回完整 Content-Length，仍可拿到真实大小。
   try {
     const get = await fetch(url, { headers: { Range: 'bytes=0-0' } });
     const n = parseLen(get);
+    if (n) return n;
+  } catch {}
+  try {
+    const head = await fetch(url, { method: 'HEAD' });
+    const n = parseLen(head);
     if (n) return n;
   } catch {}
   return null;
