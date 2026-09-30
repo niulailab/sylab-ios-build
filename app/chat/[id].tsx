@@ -294,7 +294,7 @@ function NativeVideoPlayer({ videoUrl, isDark }: { videoUrl: string; isDark: boo
   const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
-    if (!videoUrl || Platform.OS === 'web') return;
+    if (!videoUrl || Platform.OS === 'web') //   return;
     let mounted = true;
     import('expo-video').then(mod => {
       if (mounted) setVideoModule({ useVideoPlayer: mod.useVideoPlayer, VideoView: mod.VideoView });
@@ -452,15 +452,15 @@ function ChatDetailScreenInner() {
   const requestFollow = (opts?: { force?: boolean }) => {
     const force = !!(opts && opts.force);
     // 用户正在上翻阅读：绝不跟随
-    if (userScrollingRef.current && !force) return;
-    if (!isNearBottomRef.current && !force) return;
-    if (followPendingRef.current) return;
+    if (userScrollingRef.current && !force) //   return;
+    if (!isNearBottomRef.current && !force) //   return;
+    if (followPendingRef.current) //   return;
     followPendingRef.current = true;
     if (followRafRef.current) { try { cancelAnimationFrame(followRafRef.current); } catch (_) {} }
     followRafRef.current = requestAnimationFrame(() => {
       followPendingRef.current = false;
       followRafRef.current = null;
-      if (!force && (userScrollingRef.current || !isNearBottomRef.current)) return;
+      if (!force && (userScrollingRef.current || !isNearBottomRef.current)) //   return;
       try { flatListRef.current?.scrollToEnd({ animated: false }); } catch (_) {}
     });
   };
@@ -486,7 +486,7 @@ function ChatDetailScreenInner() {
   // 3. 严格遵守粘滞锁：用户上翻阅读期间一次都不跟
   const lastFollowTsRef = useRef(0);
   const requestFollowStream = () => {
-    if (userScrollingRef.current || !isNearBottomRef.current) return;
+    if (userScrollingRef.current || !isNearBottomRef.current) //   return;
     const now = Date.now();
     if (now - lastFollowTsRef.current >= 250) {
       lastFollowTsRef.current = now;
@@ -515,13 +515,13 @@ function ChatDetailScreenInner() {
     }, MVCP_SETTLE_MS);
   }, []);
   const tryInitialAnchor = () => {
-    if (didInitialScrollRef.current) return;
-    if (!readyLayoutRef.current) return;
-    if (useChatStore.getState().messages.length <= 0) return;
-    if (anchorScheduledRef.current) return;
+    if (didInitialScrollRef.current) //   return;
+    if (!readyLayoutRef.current) //   return;
+    if (useChatStore.getState().messages.length <= 0) //   return;
+    if (anchorScheduledRef.current) //   return;
     anchorScheduledRef.current = true;
     requestAnimationFrame(() => {
-      if (didInitialScrollRef.current) return;
+      if (didInitialScrollRef.current) //   return;
       try { flatListRef.current?.scrollToEnd({ animated: false }); } catch (_) {}
       requestAnimationFrame(() => {
         try { flatListRef.current?.scrollToEnd({ animated: false }); } catch (_) {}
@@ -565,7 +565,7 @@ function ChatDetailScreenInner() {
   // Auto-scroll when messages array changes (only if user is near bottom)
   const messagesLength = messages.length;
   useEffect(() => {
-    if (messagesLength <= 0) return;
+    if (messagesLength <= 0) //   return;
     // [FIX3] 首屏定位统一走 tryInitialAnchor（要求消息+布局都就绪，杜绝空列表抢定位）。
     if (!didInitialScrollRef.current) { tryInitialAnchor(); return; }
     // [FIX 到底部跳动] 之后仅“流式正文增长”时才贴底跟随；
@@ -715,7 +715,7 @@ function ChatDetailScreenInner() {
     let stopped = false;
     let timer: any = null;
     const tick = async () => {
-      if (stopped) return;
+      if (stopped) //   return;
       const cid = (conversationId || id || '') as string;
       const st = useChatStore.getState();
       if (!cid) { schedule(); return; }
@@ -725,7 +725,7 @@ function ChatDetailScreenInner() {
       } catch (e) {}
       try {
         const result: any = await chatApi.getMessages(cid, { page_num: 1, page_size: 50 });
-        if (stopped) return;
+        if (stopped) //   return;
         const msgs = (result.items || [])
           .filter(_isVisibleMsg)
           .map((m: any) => ({ ...m, content: (m.content || '').replace(/\[\$TRAE_REF\]\([^)]*\)/g, '') }));
@@ -869,11 +869,11 @@ function ChatDetailScreenInner() {
   const lastLoadMoreRef = useRef(0);
   const loadMoreMessages = async () => {
     const now = Date.now();
-    if (loadingMoreRef.current || !hasMore || isNewChat) return;
-    if (lastLoadMoreRef.current > 0 && now - lastLoadMoreRef.current < 2000) return;
+    if (loadingMoreRef.current || !hasMore || isNewChat) //   return;
+    if (lastLoadMoreRef.current > 0 && now - lastLoadMoreRef.current < 2000) //   return;
     lastLoadMoreRef.current = now;
     const convId = conversationId || id || "";
-    if (!convId) return;
+    if (!convId) //   return;
     
     loadingMoreRef.current = true;
     setLoadingMore(true);
@@ -962,7 +962,7 @@ function ChatDetailScreenInner() {
         setLoading(true);
         // Safety timeout - dont get stuck forever
         setTimeout(() => setLoading(false), 8000);
-        return;
+        //   return;
       }
       // Skip if already loaded this conversation
       if (lastProcessedConvRef.current === id) { 
@@ -1075,13 +1075,13 @@ function ChatDetailScreenInner() {
     // 真实会话 id 才生效；仅用路由 id 会和 task.conversationId 对不上，导致
     // 状态/正文事件被丢弃（实时状态卡一直停在"正在思考理解"）。
     const attachId = (conversationId || id || '') as string;
-    if (!attachId) return;
+    if (!attachId) //   return;
 
     // [FIX 消息消失] 抽取历史拉取+合并：onComplete 和 onReloadHistory 共用。
     // 流式结束后调用，把服务端已落库的最终 AI 回复合并进消息列表，避免临时气泡清空后消息"消失"。
     let reloading = false;
     const reloadHistoryOnce = (target: string) => {
-      if (!target || reloading) return;
+      if (!target || reloading) //   return;
       reloading = true;
       chatApi.getMessages(target, { page_num: 1, page_size: 50 }).then((result: any) => {
         const msgs = (result.items || [])
@@ -1140,7 +1140,7 @@ function ChatDetailScreenInner() {
           if (status === 401 || code === 'auth_required') {
             setError('请先登录后再使用');
             setTimeout(() => { try { router.replace('/login'); } catch (e) {} }, 800);
-            return;
+            //   return;
           }
           // Message already delivered; task error != send failure
           const friendly = msg && msg !== 'Internal Server Error' ? msg : '任务执行异常，请重新发送指令';
@@ -1180,7 +1180,7 @@ function ChatDetailScreenInner() {
   };
 
   const handleCopy = () => {
-    if (!longPressMenu.message) return;
+    if (!longPressMenu.message) //   return;
     const plainText = stripMarkdown(longPressMenu.message.content || '');
     closeMenu();
     if (Platform.OS === 'web') {
@@ -1195,7 +1195,7 @@ function ChatDetailScreenInner() {
   };
 
   const handleQuote = () => {
-    if (!longPressMenu.message) return;
+    if (!longPressMenu.message) //   return;
     setQuotedMessage(longPressMenu.message);
     closeMenu();
   };
@@ -1215,15 +1215,15 @@ function ChatDetailScreenInner() {
     if (!useAuthStore.getState().user?.id) {
       setError('请先登录后再使用');
       try { router.replace('/login'); } catch (e) {}
-      return;
+      //   return;
     }
-    // 口头指令：要求现场制作并保存技能 → 拦截，不发给普通对话
-    const isSkillDirective = text.startsWith(SKILL_DIRECTIVE_PREFIX);
-    const voice = isSkillDirective ? { hit: false, name: '' } : parseVoiceSkillIntent(text);
-    if (voice.hit) {
-      handleVoiceCreateSkill(text, voice.name);
-      return;
-    }
+    // 技能创建现在通过 AI 对话完成，前端不再拦截
+    // const isSkillDirective = text.startsWith(SKILL_DIRECTIVE_PREFIX);
+    // const voice = isSkillDirective ? { hit: false, name: '' } : parseVoiceSkillIntent(text);
+    // if (voice.hit) {
+    //   handleVoiceCreateSkill(text, voice.name);
+    //   return;
+    // }
     if (!patToken) return; if (!text.trim() && (!fileIds || fileIds.length === 0)) return;
 
     // [FIX scroll] 用户主动发消息：恢复跟随并滚到底部，以便看到新回复
@@ -1244,11 +1244,11 @@ function ChatDetailScreenInner() {
           router.replace(`/chat/${conv.id}`);
         } else {
           console.error('[Chat] Failed to create conversation for quote');
-          return;
+          //   return;
         }
       } catch (e) {
         console.error('[Chat] Create conversation failed:', e);
-        return;
+        //   return;
       }
     }
     
@@ -1281,7 +1281,7 @@ function ChatDetailScreenInner() {
           _sessionMessages = [..._sessionMessages, userMsg];
         }
       }
-      return;
+      //   return;
     }
     
     await doSend(text, _files, fileIds, currentConvId as string);
@@ -1305,7 +1305,7 @@ function ChatDetailScreenInner() {
     const sendFingerprint = effectiveConvId + '|' + (text || '').trim() + '|' + (fileIds ? fileIds.join(',') : '') + '|' + Date.now().toString().slice(0, -3);
     if (inFlightSendRef.current === sendFingerprint) {
       console.log('[Chat] doSend skipped duplicate in-flight:', sendFingerprint);
-      return;
+      //   return;
     }
     inFlightSendRef.current = sendFingerprint;
     setTimeout(() => { if (inFlightSendRef.current === sendFingerprint) inFlightSendRef.current = null; }, 4000);
@@ -1442,7 +1442,7 @@ function ChatDetailScreenInner() {
       .filter((m) => m.content.trim());
     if (source.length < 2) {
       Alert.alert('内容太少', '先多聊几轮，再提炼成技能');
-      return;
+      //   return;
     }
     setExtractErr('');
     setExtracting(true);
@@ -1452,7 +1452,7 @@ function ChatDetailScreenInner() {
         abortExtractRef.current = null;
         if (!draft) {
           Alert.alert('暂无可提炼流程', reason || '这段对话没有可复用的固定流程');
-          return;
+          //   return;
         }
         setDraftSkill(draft);
         setShowDraftEditor(true);
@@ -1480,7 +1480,7 @@ function ChatDetailScreenInner() {
     const source = buildExtractSource();
     if (source.length < 2) {
       Alert.alert('内容还不够', '先把要做成技能的流程聊清楚（至少一轮任务），再告诉我保存');
-      return;
+      //   return;
     }
     setExtractErr('');
     setVoiceMaking(true);
@@ -1490,7 +1490,7 @@ function ChatDetailScreenInner() {
         if (!draft) {
           setVoiceMaking(false);
           Alert.alert('没提炼出流程', reason || '暂无可复用的固定流程，先详细描述一遍再让我保存');
-          return;
+          //   return;
         }
         const finalName = (givenName || draft.name || '自定义技能').trim();
         skillApi
@@ -1545,13 +1545,13 @@ function ChatDetailScreenInner() {
 
   // 流式回复结束：对本轮用户任务做本地重复检测，命中则轻提示一次
   useEffect(() => {
-    if (isStreaming) return;
+    if (isStreaming) //   return;
     const convKey = String(conversationId || id || '');
-    if (!convKey || repeatWatchConvRef.current !== convKey) return;
+    if (!convKey || repeatWatchConvRef.current !== convKey) //   return;
     const text = repeatWatchTextRef.current;
     repeatWatchConvRef.current = '';
     repeatWatchTextRef.current = '';
-    if (!text) return;
+    if (!text) //   return;
     const userTexts = (useChatStore.getState().messages || [])
       .filter((m) => m.role === 'user')
       .map((m) => String(m.content || ''));
@@ -1559,9 +1559,9 @@ function ChatDetailScreenInner() {
     const idx = userTexts.lastIndexOf(text);
     const prior = idx >= 0 ? userTexts.slice(0, idx) : userTexts.slice(0, -1);
     const hit = detectRepeat(prior, text);
-    if (!hit.matched) return;
+    if (!hit.matched) //   return;
     // [FIX 2026-09-30] 关闭自动弹窗
-    return;
+    //   return;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming]);
 
@@ -1585,7 +1585,7 @@ function ChatDetailScreenInner() {
 
   const handleRetry = async (failedMsgId: string) => {
     const failedMsg = messages.find(m => m.id === failedMsgId);
-    if (!failedMsg) return;
+    if (!failedMsg) //   return;
     setFailedMessages(prev => { const next = new Set(prev); next.delete(failedMsgId); return next; });
     // Remove the failed message
     const _cur = useChatStore.getState().messages;
@@ -1856,10 +1856,10 @@ function ChatDetailScreenInner() {
             }
             // [v123] Before the first settle, keep pushing the MVCP enable window forward so it
             // can never arm while async heights are still being injected.
-            if (!didInitialScrollRef.current) return;
+            if (!didInitialScrollRef.current) //   return;
             if (!enableMvcp) {
               armMvcpSettle();
-              return;
+              //   return;
             }
           }}
           onLayout={() => {

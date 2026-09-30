@@ -2,7 +2,7 @@
   "expo": {
     "name": "sylab",
     "slug": "sylab-app",
-    "version": "1.0.33",
+    "version": "1.0.34",
     "orientation": "portrait",
     "scheme": "sylab",
     "userInterfaceStyle": "automatic",
@@ -11,15 +11,15 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.sylab.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "允许访问相机以拍摄照片",
-        "NSPhotoLibraryUsageDescription": "允许访问照片以上传文件",
-        "NSMicrophoneUsageDescription": "允许使用麦克风进行语音输入",
+        "NSCameraUsageDescription": "\u5141\u8bb8\u8bbf\u95ee\u76f8\u673a\u4ee5\u62cd\u6444\u7167\u7247",
+        "NSPhotoLibraryUsageDescription": "\u5141\u8bb8\u8bbf\u95ee\u7167\u7247\u4ee5\u4e0a\u4f20\u6587\u4ef6",
+        "NSMicrophoneUsageDescription": "\u5141\u8bb8\u4f7f\u7528\u9ea6\u514b\u98ce\u8fdb\u884c\u8bed\u97f3\u8f93\u5165",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,
           "NSAllowsArbitraryLoadsInWebContent": true
         }
       },
-      "buildNumber": "33"
+      "buildNumber": "34"
     },
     "android": {
       "adaptiveIcon": {
@@ -45,8 +45,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "允许访问照片以上传文件",
-          "cameraPermission": "允许拍摄照片"
+          "photosPermission": "\u5141\u8bb8\u8bbf\u95ee\u7167\u7247\u4ee5\u4e0a\u4f20\u6587\u4ef6",
+          "cameraPermission": "\u5141\u8bb8\u62cd\u6444\u7167\u7247"
         }
       ],
       [
