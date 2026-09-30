@@ -551,6 +551,15 @@ function FileDownloadCard({ url }: { url: string }) {
   const [size, setSize] = React.useState<number | null>(null);
   const [downloading, setDownloading] = React.useState(false);
   const [progress, setProgress] = React.useState(0);
+  // [FIX 灰块] 流式footer卸载、历史合并在同位置重挂时，RN 偶发丢首次绘制，
+  // 卡片只剩无文字的灰色骨架。首帧先渲染占位，下一帧(布局已完成)再上完整卡片。
+  const [painted, setPainted] = React.useState(false);
+
+  React.useEffect(() => {
+    let alive = true;
+    const raf = requestAnimationFrame(() => { if (alive) setPainted(true); });
+    return () => { alive = false; cancelAnimationFrame(raf); };
+  }, []);
 
   React.useEffect(() => {
     let alive = true;
@@ -560,6 +569,10 @@ function FileDownloadCard({ url }: { url: string }) {
   }, [url]);
 
   if (!fi) return null;
+  if (!painted) {
+    // 与真实卡片底色一致的占位，高度贴合完整卡片(约92)，避免高度跳变
+    return <View style={{ marginVertical: 6, height: 92, borderRadius: 12, backgroundColor: '#f4f6fb' }} />;
+  }
 
   const onPreview = () => {
     if (fi.ext === '.md') { setMdUrl(url); return; }
