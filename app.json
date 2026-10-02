@@ -2,7 +2,7 @@
   "expo": {
     "name": "sylab",
     "slug": "sylab-app",
-    "version": "1.0.34",
+    "version": "1.0.35",
     "orientation": "portrait",
     "scheme": "sylab",
     "userInterfaceStyle": "automatic",
@@ -11,15 +11,15 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.sylab.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "\u5141\u8bb8\u8bbf\u95ee\u76f8\u673a\u4ee5\u62cd\u6444\u7167\u7247",
-        "NSPhotoLibraryUsageDescription": "\u5141\u8bb8\u8bbf\u95ee\u7167\u7247\u4ee5\u4e0a\u4f20\u6587\u4ef6",
-        "NSMicrophoneUsageDescription": "\u5141\u8bb8\u4f7f\u7528\u9ea6\u514b\u98ce\u8fdb\u884c\u8bed\u97f3\u8f93\u5165",
+        "NSCameraUsageDescription": "允许访问相机以拍摄照片",
+        "NSPhotoLibraryUsageDescription": "允许访问照片以上传文件",
+        "NSMicrophoneUsageDescription": "允许使用麦克风进行语音输入",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,
           "NSAllowsArbitraryLoadsInWebContent": true
         }
       },
-      "buildNumber": "34"
+      "buildNumber": "35"
     },
     "android": {
       "adaptiveIcon": {
@@ -32,7 +32,7 @@
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.RECORD_AUDIO"
       ],
-      "versionCode": 31
+      "versionCode": 32
     },
     "web": {
       "bundler": "metro",
@@ -45,8 +45,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "\u5141\u8bb8\u8bbf\u95ee\u7167\u7247\u4ee5\u4e0a\u4f20\u6587\u4ef6",
-          "cameraPermission": "\u5141\u8bb8\u62cd\u6444\u7167\u7247"
+          "photosPermission": "允许访问照片以上传文件",
+          "cameraPermission": "允许拍摄照片"
         }
       ],
       [
@@ -67,8 +67,8 @@
       "router": {
         "origin": false
       },
-      "EXPO_PUBLIC_API_BASE": "https://direct.symsgf.xyz:8099",
-      "EXPO_PUBLIC_OPEN_API_BASE": "https://direct.symsgf.xyz:8099",
+      "EXPO_PUBLIC_API_BASE": "https://s.symsgf.xyz",
+      "EXPO_PUBLIC_OPEN_API_BASE": "https://s.symsgf.xyz",
       "EXPO_PUBLIC_ENABLE_API_LOG": "true"
     },
     "owner": "ahuaj",
