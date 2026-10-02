@@ -403,6 +403,21 @@ const stripMarkdown = (text: string): string => {
     .trim();
 };
 
+// 只有真正的图片才允许走多模态 image；PDF/任意其他文件一律降级为文本链接，
+// 否则模型会按图片去拉取 PDF/二进制链接，直接 400「图片输入格式/解析错误」。
+const IMAGE_URL_RE = /\.(png|jpe?g|gif|webp|bmp|heic|heif|avif|tiff?)(\?|#|$)/i;
+const isImageAttachment = (f: any): boolean => {
+  const mime = String((f as any)?.type || "").toLowerCase();
+  if (mime) {
+    if (mime.startsWith("image/")) return true;
+    // 显式是 pdf/视频/音频/其他 application 类型，不能仅凭扩展名兜底当图片
+    if (mime === "application/pdf" ||
+        mime.startsWith("video/") || mime.startsWith("audio/") ||
+        mime.startsWith("application/")) return false;
+  }
+  return IMAGE_URL_RE.test(String((f as any)?.url || ""));
+};
+
 const formatTime = (ts: any): string => {
   if (!ts) return "";
   const num = Number(ts);
@@ -1360,25 +1375,38 @@ function ChatDetailScreenInner() {
 
     const aiContent = finalContent;
 
-    // Build additional_messages: combine files + text into object_string for multimodal support
+    // Build additional_messages: 按 MIME 分流——只有真图片才走多模态 image，
+    // PDF/其他文件作为「文件名+下载链接」写进文本（模型可读、可自行 execute_code 下载解析）。
+    // 旧实现把所有附件都当 image，发 PDF 会让模型每轮 400「图片输入格式/解析错误」。
     const additionalMsgs: Array<{ role: string; content: string; content_type: string }> = [];
-    // Collect image URLs from _files (uploaded via /user-upload)
     const imageUrls: string[] = [];
+    const docLinks: string[] = [];
     if (_files && _files.length > 0) {
       for (const f of _files) {
         const u = (f as any).url || '';
-        if (u && u.startsWith('http')) imageUrls.push(u);
+        if (!u || !u.startsWith('http')) continue;
+        if (isImageAttachment(f)) imageUrls.push(u);
+        else docLinks.push(`${(f as any).name || u}: ${u}`);
       }
     }
     const realFileIds: string[] = [];
     if (fileIds) {
       for (const fid of fileIds) {
+        // fileIds 无 MIME 元信息，按扩展名判定；无法判定的非图片当作文本链接
         if (fid && fid.startsWith('http')) {
-          imageUrls.push(fid);
+          if (IMAGE_URL_RE.test(fid)) imageUrls.push(fid);
+          else docLinks.push(fid);
         } else if (fid) {
           realFileIds.push(fid);
         }
       }
+    }
+
+    // 非图片附件链接并入正文，确保模型能拿到可下载地址
+    let contentText = aiContent;
+    if (docLinks.length > 0) {
+      const linkBlock = `附件：\n${docLinks.map((l) => `- ${l}`).join('\n')}`;
+      contentText = contentText ? `${contentText}\n${linkBlock}` : linkBlock;
     }
 
     if (imageUrls.length > 0 || realFileIds.length > 0) {
@@ -1389,7 +1417,7 @@ function ChatDetailScreenInner() {
       for (const fid of realFileIds) {
         contentParts.push({ type: 'file', file_id: fid });
       }
-      contentParts.push({ type: 'text', text: aiContent || '请分析这张图片' });
+      contentParts.push({ type: 'text', text: contentText || '请分析这张图片' });
       additionalMsgs.push({
         role: 'user',
         content: JSON.stringify(contentParts),
@@ -1398,7 +1426,7 @@ function ChatDetailScreenInner() {
     } else {
       additionalMsgs.push({
         role: 'user',
-        content: aiContent,
+        content: contentText,
         content_type: 'text',
       });
     }
