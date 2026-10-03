@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import type { CreditBalance, CreditTransaction, ModelPricing, ActionPricing, CardRedeemResponse, ApiResponse } from '../types/api';
 
-import { RUNTIME_BASE as API_BASE } from '../config/runtime';
+import { RUNTIME_BASE as API_BASE, getRuntimeBase, reportBaseFailure } from '../config/runtime';
 
 // 积分服务用独立的 axios 实例，不需要 bearer/session 认证，用 user_id 做标识
 const creditsClient = axios.create({
@@ -11,6 +11,20 @@ const creditsClient = axios.create({
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 });
+
+creditsClient.interceptors.request.use((config) => {
+  if (config.baseURL && !/^https?:\/\//i.test(config.url || '')) {
+    config.baseURL = getRuntimeBase();
+  }
+  return config;
+});
+creditsClient.interceptors.response.use(
+  (r) => r,
+  (error) => {
+    if (!error.response) reportBaseFailure();
+    return Promise.reject(error);
+  }
+);
 
 export const creditsApi = {
   // 查询余额

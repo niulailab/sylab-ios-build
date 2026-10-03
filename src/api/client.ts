@@ -2,7 +2,7 @@ import axios, { AxiosInstance, AxiosError } from 'axios';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-import { RUNTIME_BASE as API_BASE } from '../config/runtime';
+import { RUNTIME_BASE as API_BASE, getRuntimeBase, reportBaseFailure } from '../config/runtime';
 const OPEN_API_BASE = API_BASE;
 const ENABLE_LOG = Constants.expoConfig?.extra?.EXPO_PUBLIC_ENABLE_API_LOG === 'true';
 
@@ -28,6 +28,10 @@ function createClient(options: ClientOptions): AxiosInstance {
 
   // 请求拦截器：注入认证头
   client.interceptors.request.use((config) => {
+    // 双通道：每次请求用当前健康的出口（仅当配置了 baseURL 且 url 非绝对地址）
+    if (config.baseURL && !/^https?:\/\//i.test(config.url || '')) {
+      config.baseURL = getRuntimeBase();
+    }
     switch (authMode) {
       case 'session':
         if (options.sessionId) {
@@ -82,6 +86,7 @@ function createClient(options: ClientOptions): AxiosInstance {
       }
       // Debug: capture detailed network error info
       if (!error.response) {
+        reportBaseFailure();
         const e = error as any;
         const parts: string[] = [];
         parts.push(`msg=${e.message}`);

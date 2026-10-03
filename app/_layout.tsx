@@ -6,6 +6,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore } from '../src/store/auth';
 import { queueManager } from '../src/queue/queueTaskManager';
+import { startBaseProbe } from '../src/config/runtime';
 import { Colors } from '../src/constants/theme';
 
 class RootErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean; error: string}> {
@@ -64,7 +65,7 @@ function RootLayoutNav() {
 
 export default function RootLayout() {
   const restore = useAuthStore((s) => s.restore);
-  useEffect(() => { restore(); queueManager.init(); }, []);
+  useEffect(() => { restore(); queueManager.init(); startBaseProbe(); }, []);
   return <RootErrorBoundary><RootLayoutNav /></RootErrorBoundary>;
 }
 
