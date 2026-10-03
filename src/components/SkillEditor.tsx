@@ -53,6 +53,27 @@ const SkillEditor: React.FC<Props> = ({ visible, userId, edit, draft, onClose, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, draft]);
 
+  // 组件常驻挂载，edit 变化不会重跑 useState；弹窗打开时按 编辑/新建 同步表单
+  React.useEffect(() => {
+    if (!visible) return;
+    if (edit) {
+      setName(edit.name || '');
+      setIcon(edit.icon || '🧩');
+      setCategory(edit.category || '自定义');
+      setTrigger(edit.trigger || '');
+      setToolsText((edit.tools || []).join(','));
+      setParamsText(
+        (edit.params || []).map((x) => `${x.name}${x.required ? '*' : ''}`).join(','),
+      );
+      setContent(edit.content || '');
+    } else if (!draft) {
+      setName(''); setIcon('🧩'); setCategory('自定义');
+      setTrigger(''); setToolsText(''); setParamsText(''); setContent('');
+    }
+    setErr('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, edit]);
+
   const parseParams = (txt: string): SkillParam[] =>
     txt.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean).map((x) => {
       const required = x.endsWith('*');
