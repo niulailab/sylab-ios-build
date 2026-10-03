@@ -1,4 +1,4 @@
-import { getRuntimeBase, reportBaseFailure } from '../config/runtime';
+import { RUNTIME_BASE } from '../config/runtime';
 /**
  * Chat Queue Service API
  * 当 SSE 直连断开时，通过任务队列恢复/获取消息
@@ -9,7 +9,7 @@ import { getRuntimeBase, reportBaseFailure } from '../config/runtime';
  * XHR.onprogress 在 iOS 原生 / Android 原生 / web PWA 三端都能分块推送。
  */
 
-const queueBase = () => `${getRuntimeBase()}/chat-queue`;
+const QUEUE_BASE = `${RUNTIME_BASE}/chat-queue`;
 
 export interface QueueSubmitRequest {
   bot_id: string;
@@ -52,7 +52,7 @@ export interface QueueEventsResponse {
 
 export const chatQueueApi = {
   submit: async (req: QueueSubmitRequest, bearerToken: string): Promise<QueueSubmitResponse> => {
-    const resp = await fetch(`${queueBase()}/submit`, {
+    const resp = await fetch(`${QUEUE_BASE}/submit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${bearerToken}` },
       body: JSON.stringify(req),
@@ -71,142 +71,24 @@ export const chatQueueApi = {
   },
 
   getStatus: async (taskId: string): Promise<QueueStatusResponse> => {
-    const resp = await fetch(`${queueBase()}/status/${taskId}`);
+    const resp = await fetch(`${QUEUE_BASE}/status/${taskId}`);
     if (!resp.ok) throw new Error(`Queue status failed: ${resp.status}`);
     return resp.json();
   },
 
   getEvents: async (taskId: string, since: number = 0): Promise<QueueEventsResponse> => {
-    const resp = await fetch(`${queueBase()}/events/${taskId}?since=${since}`);
+    const resp = await fetch(`${QUEUE_BASE}/events/${taskId}?since=${since}`);
     if (!resp.ok) throw new Error(`Queue events failed: ${resp.status}`);
     return resp.json();
   },
 
-  /**
-   * 纯短连接轮询（2026-10-03）。
-   * 替代 connectStream 的 /stream SSE 长连接：移动 DPI 只拦长连接，短轮询
-   * 每次请求几百毫秒即返回，不具备长连接特征，因此不会被拦。事件结构、回调
-   * 语义与 connectStream 完全一致（delta/toolCall/intermediateComplete/
-   * complete/error/eventIndex），内部以指数退避容忍偶发失败。
-   */
-  pollEvents: (
-    taskId: string,
-    callbacks: {
-      onDelta: (text: string, messageId?: string) => void;
-      onToolCall?: (name: string, args: string, result?: string) => void;
-      onComplete: (chatId: string, conversationId: string) => void;
-      onIntermediateComplete?: (messageId: string, content: string) => void;
-      onError: (error: Error) => void;
-      onEventIndex?: (index: number) => void;
-    },
-    since: number = 0,
-    opts: { intervalMs?: number; maxErrors?: number } = {}
-  ): { abort: () => void } => {
-    const intervalMs = opts.intervalMs ?? 700;
-    const maxErrors = opts.maxErrors ?? 12;
-    let aborted = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let cursor = since;
-    let errCount = 0;
-    let done = false;
-
-    const applyEvent = (ev: QueueEvent) => {
-      const idx = typeof ev.index === 'number' ? ev.index : cursor;
-      callbacks.onEventIndex?.(idx);
-      cursor = Math.max(cursor, idx + 1);
-      const type = ev.event_type;
-      const data = ev.data || {};
-      if (type === 'conversation.message.delta' && data.content) {
-        callbacks.onDelta(data.content, data.id);
-      } else if (type === 'conversation.message.completed') {
-        if (data.type === 'function_call') {
-          try {
-            const tc = typeof data.content === 'string' ? JSON.parse(data.content || '{}') : data.content;
-            const name = tc.function?.name || tc.name || 'unknown';
-            const args = tc.function?.arguments || tc.arguments || '{}';
-            callbacks.onToolCall?.(name, args);
-          } catch (e) {}
-        } else if (data.type === 'tool_response') {
-          const toolName = data.meta_data?.tool_name || '';
-          callbacks.onToolCall?.(toolName, '', data.content);
-        } else if (data.type === 'answer' && data.id) {
-          callbacks.onIntermediateComplete?.(data.id, data.content || '');
-        }
-      } else if (type === 'conversation.chat.failed') {
-        done = true;
-        callbacks.onError(new Error(data.last_error?.msg || 'Chat failed'));
-      }
-    };
-
-    const tick = async () => {
-      if (aborted || done) return;
-      try {
-        const resp = await fetch(`${queueBase()}/events/${taskId}?since=${cursor}`);
-        if (aborted || done) return;
-        if (!resp.ok) throw new Error(`events ${resp.status}`);
-        const j: QueueEventsResponse = await resp.json();
-        if (aborted || done) return;
-        errCount = 0;
-        for (const ev of j.events || []) applyEvent(ev);
-        const st = j.status;
-        if (st === 'completed') {
-          done = true;
-          // 取权威状态拿 chat_id / conversation_id
-          try {
-            const sr = await fetch(`${queueBase()}/status/${taskId}`);
-            const sj = await sr.json();
-            if (sj.status === 'failed') { callbacks.onError(new Error(sj.error || '任务执行失败')); return; }
-            callbacks.onComplete(sj.chat_id || '', sj.conversation_id || '');
-          } catch (e) {
-            callbacks.onComplete('', '');
-          }
-          return;
-        }
-        if (st === 'failed') {
-          done = true;
-          try {
-            const sr = await fetch(`${queueBase()}/status/${taskId}`);
-            const sj = await sr.json();
-            callbacks.onError(new Error(sj.error || '任务执行失败'));
-          } catch (e) { callbacks.onError(new Error('任务执行失败')); }
-          return;
-        }
-        if (st === 'cancelled') {
-          done = true;
-          callbacks.onComplete('', '');
-          return;
-        }
-        timer = setTimeout(tick, intervalMs);
-      } catch (e: any) {
-        if (aborted || done) return;
-        errCount++;
-        reportBaseFailure();
-        if (errCount >= maxErrors) {
-          done = true;
-          callbacks.onError(new Error('网络连接失败，请稍后重试'));
-          return;
-        }
-        timer = setTimeout(tick, errCount >= 5 ? 2000 : intervalMs);
-      }
-    };
-
-    timer = setTimeout(tick, 300);
-
-    return {
-      abort: () => {
-        aborted = true;
-        if (timer) clearTimeout(timer);
-      },
-    };
-  },
-
   start: async (taskId: string): Promise<void> => {
     // Start processing only when primary SSE fails (standby mode)
-    await fetch(`${queueBase()}/start/${taskId}`, { method: 'POST' });
+    await fetch(`${QUEUE_BASE}/start/${taskId}`, { method: 'POST' });
   },
 
   cancel: async (taskId: string): Promise<void> => {
-    await fetch(`${queueBase()}/cancel/${taskId}`, { method: 'DELETE' });
+    await fetch(`${QUEUE_BASE}/cancel/${taskId}`, { method: 'DELETE' });
   },
 
   /**
@@ -221,7 +103,7 @@ export const chatQueueApi = {
     onError: (error: Error) => void;
     onEventIndex?: (index: number) => void;
   }, since: number = 0): { abort: () => void } => {
-    const url = `${queueBase()}/stream/${taskId}?since=${since}`;
+    const url = `${QUEUE_BASE}/stream/${taskId}?since=${since}`;
 
     let aborted = false;
     let completed = false;

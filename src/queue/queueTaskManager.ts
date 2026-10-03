@@ -282,7 +282,8 @@ class QueueTaskManagerImpl {
       task.streamConn = null;
     }
     let frameIdx = -1;
-    const conn = chatQueueApi.connectStream(
+    // 2026-10-03: 改用纯短连接轮询 /events，规避移动 DPI 对 /stream SSE 长连接的拦截
+    const conn = chatQueueApi.pollEvents(
       task.taskId,
       {
         onDelta: (text, messageId) => {
