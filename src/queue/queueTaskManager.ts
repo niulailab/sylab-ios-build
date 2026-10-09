@@ -415,7 +415,7 @@ class QueueTaskManagerImpl {
       useChatStore.getState().setMessages([...cur, aiMsg]);
     }
     // 清空 streaming 状态，为下一轮腾出空间
-    useChatStore.getState().startStreaming();
+    useChatStore.getState().startStreaming(true);
     task.tools = [];
   }
 
@@ -681,7 +681,7 @@ class QueueTaskManagerImpl {
     if (task && task.isStreaming) {
       // 灌入快照：重置流式态 → 工具步骤 → 已生成正文 → 当前阶段文案
       const store = useChatStore.getState();
-      store.startStreaming();
+      store.startStreaming(true);
       if (task.tools.length > 0) {
         useChatStore.setState({
           toolCalls: task.tools.map((t) => ({ id: t.id, name: t.name, arguments: t.arguments, result: t.result })),

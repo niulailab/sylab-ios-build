@@ -32,7 +32,7 @@ interface ChatState {
   generatingType: 'image' | 'video' | 'general' | null;
 
   setMessages: (messages: ChatMessage[]) => void;
-  startStreaming: () => void;
+  startStreaming: (preserveActivityStatus?: boolean) => void;
   appendDelta: (delta: string, messageId?: string) => void;
   appendToolCall: (name: string, args: string, result?: string) => void;
   finishStreaming: (messageId: string) => void;
@@ -55,15 +55,15 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setMessages: (messages) => set({ messages }),
 
-  startStreaming: () => set({
+  startStreaming: (preserveActivityStatus?: boolean) => set((state) => ({
     isStreaming: true,
     streamingContent: '',
     streamingMessageId: null,
     toolCalls: [],
     error: null,
-    activityStatus: '正在思考理解…',
+    activityStatus: preserveActivityStatus ? state.activityStatus : '正在思考理解…',
     generatingType: null,
-  }),
+  })),
 
   appendDelta: (delta, messageId?) => set((state) => ({
     streamingContent: state.streamingContent + delta,
