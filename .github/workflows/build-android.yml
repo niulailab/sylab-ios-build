@@ -1,0 +1,60 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version bump
+        run: ./scripts/check-version-bump.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Android native project
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Ensure debug keystore exists
+        run: |
+          if [ ! -f android/app/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -storetype PKCS12 \
+              -keystore android/app/debug.keystore \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          ls -la android/app/debug.keystore
+
+      - name: Build release APK (debug-signed, installable)
+        run: |
+          set -o pipefail
+          cd android
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+          test -f app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sylab-android-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30
