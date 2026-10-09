@@ -35,7 +35,7 @@ interface ChatState {
   startStreaming: (preserveActivityStatus?: boolean) => void;
   appendDelta: (delta: string, messageId?: string) => void;
   appendToolCall: (name: string, args: string, result?: string) => void;
-  finishStreaming: (messageId: string) => void;
+  finishStreaming: (messageId?: string, finalize?: boolean) => void;
   clearStreaming: () => void;
   setError: (error: string | null) => void;
   // NEW actions
@@ -43,7 +43,7 @@ interface ChatState {
   setGeneratingType: (type: 'image' | 'video' | 'general' | null) => void;
 }
 
-export const useChatStore = create<ChatState>((set) => ({
+export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
   streamingContent: '',
@@ -182,13 +182,48 @@ if (l.includes("create_scheduled_task")) return "设定定时任务";
     };
   }),
 
-  finishStreaming: (messageId) => set({
-    isStreaming: false,
-    streamingContent: '',
-    streamingMessageId: null,
-    activityStatus: '',
-    generatingType: null,
-  }),
+  finishStreaming: (messageId, finalize) => {
+    // [FIX 空气泡 2026-10-09] 结束时把已经流式渲染出来的正文原子地固化进 messages，
+    // 再清空 streaming 态。此前这里只清空 streamingContent，AI 气泡在结束瞬间立刻变空，
+    // 只能依赖聊天页 400ms 后的网络拉历史兜底——拉慢/失败/被互斥挡住即永久白泡。
+    // 现在所有完成/失败/轮询/重连分支都不会再丢已收到的内容，且不依赖网络。
+    const st = get();
+    const text = (st.streamingContent || '').replace(/\s+$/g, '');
+    const id = messageId || st.streamingMessageId || `msg_${Date.now()}`;
+    let nextMessages = st.messages;
+    if (finalize !== false && text) {
+      const duplicate = st.messages.some(
+        (m: any) => m && m.role === 'assistant' && (m.content || '') === text
+      );
+      if (!duplicate) {
+        const aiMsg: any = {
+          id,
+          role: 'assistant',
+          type: 'text',
+          content: text,
+          content_type: 'markdown',
+          created_at: String(Date.now()),
+          updated_at: String(Date.now()),
+        };
+        if (st.toolCalls && st.toolCalls.length > 0) {
+          aiMsg.tool_calls = st.toolCalls.map((tc: any) => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: tc.arguments || '{}' },
+          }));
+        }
+        nextMessages = [...st.messages, aiMsg];
+      }
+    }
+    set({
+      isStreaming: false,
+      streamingContent: '',
+      streamingMessageId: null,
+      activityStatus: '',
+      generatingType: null,
+      messages: nextMessages,
+    });
+  },
 
   clearStreaming: () => set({
     isStreaming: false,
