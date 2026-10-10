@@ -36,6 +36,11 @@ jobs:
       - name: Generate Android native project
         run: npx expo prebuild --platform android --clean --no-install
 
+      - name: Force Kotlin 1.9.25 (template ships 1.9.24, incompatible with Compose Compiler 1.5.15)
+        run: |
+          sed -i "s/1\.9\.24/1.9.25/g" android/build.gradle
+          grep -nE "kotlinVersion|strictly" android/build.gradle
+
       - name: Ensure debug keystore exists
         run: |
           if [ ! -f android/app/debug.keystore ]; then
