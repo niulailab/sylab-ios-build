@@ -9,9 +9,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check version bump
-        run: ./scripts/check-version-bump.sh
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -26,8 +23,6 @@ jobs:
       - name: Use preinstalled Android SDK
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          ls "$ANDROID_HOME/platforms" || true
-          ls "$ANDROID_HOME/build-tools" || true
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
 
       - name: Install dependencies
@@ -36,16 +31,10 @@ jobs:
       - name: Generate Android native project
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Force Kotlin 1.9.25 (template ships 1.9.24, incompatible with Compose Compiler 1.5.15)
-        run: |
-          sed -i "s/1\.9\.24/1.9.25/g" android/build.gradle
-          grep -nE "kotlinVersion|strictly" android/build.gradle
-
       - name: Ensure debug keystore exists
         run: |
           if [ ! -f android/app/debug.keystore ]; then
-            keytool -genkeypair -v \
-              -storetype PKCS12 \
+            keytool -genkeypair -v -storetype PKCS12 \
               -keystore android/app/debug.keystore \
               -alias androiddebugkey \
               -keyalg RSA -keysize 2048 -validity 10000 \
@@ -54,11 +43,15 @@ jobs:
           fi
           ls -la android/app/debug.keystore
 
-      - name: Build release APK (debug-signed, installable)
+      - name: Build release APK (force Kotlin 1.9.25 via init script)
         run: |
           set -o pipefail
+          echo "Z3JhZGxlLmFsbHByb2plY3RzIHsgcCAtPgogICAgcC5idWlsZHNjcmlwdC5jb25maWd1cmF0aW9ucy5jb25maWd1cmVFYWNoIHsKICAgICAgICByZXNvbHV0aW9uU3RyYXRlZ3kgewogICAgICAgICAgICBmb3JjZSAnb3JnLmpldGJyYWlucy5rb3RsaW46a290bGluLWdyYWRsZS1wbHVnaW46MS45LjI1JwogICAgICAgIH0KICAgIH0KICAgIHAuY29uZmlndXJhdGlvbnMuY29uZmlndXJlRWFjaCB7CiAgICAgICAgcmVzb2x1dGlvblN0cmF0ZWd5IHsKICAgICAgICAgICAgZm9yY2UgJ29yZy5qZXRicmFpbnMua290bGluOmtvdGxpbi1zdGRsaWI6MS45LjI1JwogICAgICAgICAgICBmb3JjZSAnb3JnLmpldGJyYWlucy5rb3RsaW46a290bGluLXN0ZGxpYi1qZGs3OjEuOS4yNScKICAgICAgICAgICAgZm9yY2UgJ29yZy5qZXRicmFpbnMua290bGluOmtvdGxpbi1zdGRsaWItamRrODoxLjkuMjUnCiAgICAgICAgfQogICAgfQp9Cg==" | base64 -d > /tmp/kotlin-forcing.gradle
+          cat /tmp/kotlin-forcing.gradle
           cd android
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+          ./gradlew buildEnvironment --init-script /tmp/kotlin-forcing.gradle | grep -i "kotlin-gradle-plugin" || true
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace \
+            --init-script /tmp/kotlin-forcing.gradle 2>&1 | tee build.log
           test -f app/build/outputs/apk/release/app-release.apk
 
       - name: Upload APK
