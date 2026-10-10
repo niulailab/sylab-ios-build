@@ -1,0 +1,60 @@
+name: Deploy Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "build-android run id (blank = latest successful)"
+        required: false
+        default: ""
+      tag:
+        description: "download filename tag, e.g. v140 -> sylab-v140-android.apk"
+        required: true
+        default: "v140"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SSH_PASS: ${{ secrets.SSH_PASS_NEW }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Resolve run id
+        id: rid
+        run: |
+          if [ -n "${{ github.event.inputs.run_id }}" ]; then
+            echo "rid=${{ github.event.inputs.run_id }}" >> $GITHUB_OUTPUT
+          else
+            R=$(gh run list --workflow=build-android.yml --status=success --branch=main --limit=1 --json databaseId --jq '.[0].databaseId')
+            echo "rid=$R" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download APK artifact
+        run: |
+          mkdir -p dl && cd dl
+          gh run download "${{ steps.rid.outputs.rid }}" --name sylab-android-apk
+          ls -l
+          test -f app-release.apk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload APK to server
+        run: |
+          SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          TAG="${{ github.event.inputs.tag }}"
+          sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "mkdir -p /var/www/sylab-ios"
+          sshpass -p "$SSH_PASS" scp $SSHO dl/app-release.apk root@36.137.84.216:/var/www/sylab-ios/sylab-$TAG-android.apk
+          sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "md5sum /var/www/sylab-ios/sylab-$TAG-android.apk"
+
+      - name: Verify public download
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          curl -s --max-time 90 -o verify.apk "https://s.symsgf.xyz/sylab-ios/sylab-$TAG-android.apk?cb=$(date +%s)"
+          ls -la verify.apk
+          test -s verify.apk
