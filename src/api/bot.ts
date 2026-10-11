@@ -7,21 +7,26 @@ import { webApiClient } from './client';
 import { API_PATHS, OPENAPI_CONNECTOR_ID } from '../constants';
 import type { SnowflakeId } from '../types/api';
 
-const SPACE_ID = '1';
+const SPACE_ID = '7666842042261045248';
 
-/** 归一化 Bot 列表项（后端字段名可能不统一） */
-function normalizeBotItem(item: any) {
+/** 归一化 Bot 列表项（后端字段名可能不统一，可能嵌套 basic_info/publish_info） */
+function normalizeBotItem(raw: any) {
+  const item = raw.basic_info || raw;
+  const connectors =
+    (raw.publish_info && raw.publish_info.connectors) || item.connector_ids || [];
   return {
     id: String(item.bot_id || item.id || ''),
     name: item.bot_name || item.name || '',
     description: item.description || '',
     icon_url: item.icon_url || item.avatar_url || '',
     avatar_url: item.icon_url || item.avatar_url || '',
-    connector_ids: item.connector_ids || [],
+    connector_ids: connectors,
     status: item.status ?? 1,
-    published: item.published ?? true,
+    published: raw.publish_info
+      ? !!raw.publish_info.has_published
+      : item.published ?? true,
     // 保留原始字段
-    ...item,
+    ...raw,
   };
 }
 
@@ -42,7 +47,7 @@ export const botApi = {
         },
       );
       const data = resp.data?.data || resp.data;
-      const list: any[] = data.intelligence_list || data.intelligences || data.items || [];
+      const list: any[] = data.intelligences || data.intelligence_list || data.items || [];
       return {
         items: list.map(normalizeBotItem),
         total: data.total || list.length,
@@ -69,7 +74,7 @@ export const botApi = {
         },
       );
       const data = resp.data?.data || resp.data;
-      const list: any[] = data.intelligence_list || data.intelligences || data.items || [];
+      const list: any[] = data.intelligences || data.intelligence_list || data.items || [];
       return {
         items: list.map(normalizeBotItem),
         total: data.total || list.length,
