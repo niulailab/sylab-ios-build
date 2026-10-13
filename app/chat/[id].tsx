@@ -884,7 +884,7 @@ function ChatDetailScreenInner() {
   const lastLoadMoreRef = useRef(0);
   const loadMoreMessages = async () => {
     const now = Date.now();
-    if (loadingMoreRef.current || !hasMore || isNewChat) return;
+    if (loadingMoreRef.current || !hasMore || (isNewChat && !conversationId)) return;
     if (lastLoadMoreRef.current > 0 && now - lastLoadMoreRef.current < 2000) return;
     lastLoadMoreRef.current = now;
     const convId = conversationId || id || "";
@@ -1646,25 +1646,18 @@ function ChatDetailScreenInner() {
     }
   };
 
-  const handleBotSwitch = async (newBotId: string, newBotName: string) => {
+  const handleBotSwitch = (newBotId: string, newBotName: string) => {
     setCurrentBotId(newBotId);
     setBotName(newBotName);
     const matched = availableBots.find((b: any) => b.id === newBotId);
     if (matched) setBotAvatar(matched.icon_url || '');
     setShowBotSelector(false);
-    // Create a new conversation with the new bot
+    // Update URL's bot_id query param without creating new conversation
+    // This allows seamless model switching within the same conversation
     try {
-      const userId = user?.id || '';
-      if (!userId) { try { router.replace('/login'); } catch (e) {} return; }
-      const conv = await chatApi.createConversation(newBotId, '', userId);
-      if (conv?.id) {
-        setConversationId(conv.id);
-        setMessages([]);
-        _sessionMessages = [];
-        router.replace(`/chat/${conv.id}?bot_id=${newBotId}` as any);
-      }
+      router.setParams({ bot_id: newBotId });
     } catch (e) {
-      console.warn('[Chat] Failed to create conversation with new bot:', e);
+      console.warn('[Chat] Failed to update URL params:', e);
     }
   };
 

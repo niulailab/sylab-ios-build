@@ -1,3 +1,4 @@
 <resources>
   <string name="app_name">sylab</string>
+  <string name="expo_runtime_version">1.0.16</string>
 </resources>
