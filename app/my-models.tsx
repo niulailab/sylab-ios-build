@@ -43,7 +43,7 @@ export default function MyModelsScreen() {
   }, [user?.id]);
 
   useEffect(() => { refresh(); }, [refresh]);
-  useFocusRefresh(refresh);
+  useEffect(() => nav.addListener('focus', refresh), [nav, refresh]);
 
   const onAdd = () => setModal({ open:true, editing:null });
   const onEdit = (m:ByokModel) => setModal({ open:true, editing:m });
@@ -165,17 +165,6 @@ export default function MyModelsScreen() {
       />
     </SafeAreaView>
   );
-}
-
-// 页面重新聚焦时刷新 (React Navigation)
-function useFocusRefresh(refresh: () => void) {
-  React.useEffect(() => {
-    // react-navigation 事件
-    const nav = require('@react-navigation/native').useNavigation?.();
-    if (!nav) return;
-    const sub = nav.addListener?.('focus', () => refresh());
-    return () => sub?.();
-  }, [refresh]);
 }
 
 function FormModal({ visible, editing, onClose, onSaved }:{
