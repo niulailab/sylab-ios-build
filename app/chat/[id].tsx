@@ -940,8 +940,19 @@ function ChatDetailScreenInner() {
     navigation.setOptions({
       title: botName,
       headerBackTitle: '', headerBackButtonDisplayMode: 'minimal',
-      headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 }}>
+      headerRight: () => {
+        // v1.0.46 常驻模型徽章：BYOK 绿色「我的·模型名」，平台灰色「平台」，一眼可辨
+        const activeByok = byokActiveId != null ? byokModels.find(m => m.id === byokActiveId) : null;
+        const badgeLabel = activeByok
+          ? '我的·' + (activeByok.display_name || activeByok.model_name || '自有')
+          : '平台';
+        const badgeColor = activeByok ? '#10b981' : (isDark ? '#cbd5e1' : '#64748b');
+        return (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginRight: 8 }}>
+          <View style={{ flexDirection:'row', alignItems:'center', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: activeByok ? 'rgba(16,185,129,0.14)' : (isDark ? 'rgba(148,163,184,0.18)' : 'rgba(100,116,139,0.10)'), maxWidth: 150 }}>
+            <Ionicons name={activeByok ? 'briefcase' : 'cube'} size={11} color={badgeColor} style={{ marginRight: 3 }} />
+            <Text numberOfLines={1} style={{ fontSize: 11, fontWeight: '600', color: badgeColor }}>{badgeLabel}</Text>
+          </View>
           <TouchableOpacity onPress={() => { fetchBots(); fetchByokModels(); setShowBotSelector(true); setModelTab('platform'); }}>
             <Ionicons name="swap-horizontal" size={20} color="#6030ff" />
           </TouchableOpacity>
@@ -953,9 +964,10 @@ function ChatDetailScreenInner() {
             <Ionicons name="folder" size={22} color="#6030ff" />
           </TouchableOpacity>
         </View>
-      ),
+        );
+      },
     });
-  }, [botName, conversationId, id, extracting]);
+  }, [botName, conversationId, id, extracting, isDark, byokActiveId, byokModels]);
 
   // Track last processed conversation to avoid re-fetching when user changes
   const lastProcessedConvRef = useRef<string | null>(null);
@@ -1080,6 +1092,8 @@ function ChatDetailScreenInner() {
     };
     
     init();
+    // v1.0.46 进页面即拉取 BYOK 状态，保证头部模型徽章准确
+    if (user?.id) { fetchByokModels(); }
     return () => {
       cancelled = true;
       // [QM] 离开聊天页不中断全局任务连接（流由 queueManager 持有）
