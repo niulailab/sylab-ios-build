@@ -56,6 +56,7 @@ function RootLayoutNav() {
         <Stack.Screen name="chat/[id]" options={{ headerShown: true, title: "sylab 对话", headerStyle: { backgroundColor: "#fff" }, headerTitleStyle: { fontSize: 17, fontWeight: "700" }, headerShadowEnabled: false, headerTitleContainerStyle: { paddingHorizontal: 0 }, headerRightContainerStyle: { paddingRight: 16 }, headerLeftContainerStyle: { paddingLeft: 16 }, }} />
         <Stack.Screen name="register" options={{ headerShown: false }} />
         <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
+                <Stack.Screen name="my-models" options={{ headerShown: true, title: "我的 AI 模型", headerStyle: { backgroundColor: "#fff" }, headerTitleStyle: { fontSize: 17, fontWeight: "700" }, headerShadowEnabled: false, headerTitleContainerStyle: { paddingHorizontal: 0 }, headerRightContainerStyle: { paddingRight: 16 }, headerLeftContainerStyle: { paddingLeft: 16 }, }} />
         <Stack.Screen name="projects/[id]" options={{ headerShown: true, title: '项目文件', headerStyle: { backgroundColor: '#fff' }, headerTitleStyle: { fontSize: 17, fontWeight: '700' }, headerShadowEnabled: false, headerTitleContainerStyle: { paddingHorizontal: 0 }, headerRightContainerStyle: { paddingRight: 16 }, headerLeftContainerStyle: { paddingLeft: 16 }, }} />
       </Stack>
     </GestureHandlerRootView>

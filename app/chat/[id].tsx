@@ -31,6 +31,7 @@ import { extractSkillFromMessages, SkillDraft } from '../../src/api/skillExtract
 import { detectRepeat } from '../../src/utils/repeatDetect';
 import { parseVoiceSkillIntent } from '../../src/utils/repeatDetect';
 import { skillApi, Skill } from '../../src/api/skill';
+import { byokApi, ByokModel } from '../../src/api/byok';
 import type { ChatMessage } from '../../src/types/api';
 
 // Safe Clipboard wrapper
@@ -782,6 +783,9 @@ function ChatDetailScreenInner() {
   const [debugError, setDebugError] = useState<string | null>(null);
   // Bot selector
   const [showBotSelector, setShowBotSelector] = useState(false);
+  const [byokModels, setByokModels] = useState<ByokModel[]>([]);
+  const [byokActiveId, setByokActiveId] = useState<number|null>(null);
+  const [modelTab, setModelTab] = useState<'platform'|'my'>('platform');
   const [availableBots, setAvailableBots] = useState<Array<{id: string; name: string; icon_url?: string}>>([]);
   // Video task polling
   const [videoTasks, setVideoTasks] = useState<Map<string, {taskId: string; status: string; url?: string; progress?: number; msgId?: string}>>(new Map());
@@ -938,7 +942,7 @@ function ChatDetailScreenInner() {
       headerBackTitle: '', headerBackButtonDisplayMode: 'minimal',
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 }}>
-          <TouchableOpacity onPress={() => { fetchBots(); setShowBotSelector(true); }}>
+          <TouchableOpacity onPress={() => { fetchBots(); fetchByokModels(); setShowBotSelector(true); setModelTab('platform'); }}>
             <Ionicons name="swap-horizontal" size={20} color="#6030ff" />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowSearch(!showSearch)}>
@@ -1628,6 +1632,36 @@ function ChatDetailScreenInner() {
   };
 
   // Fetch available bots
+
+  // 加载用户自有模型 (BYOK)
+  const fetchByokModels = async () => {
+    if (!user?.id) return;
+    try {
+      const [items, act] = await Promise.all([byokApi.list(user.id), byokApi.active(user.id)]);
+      setByokModels(items || []);
+      setByokActiveId(act?.id ?? null);
+    } catch (e) { console.warn('[BYOK] fetch fail', e); }
+  };
+
+  const handleSwitchToPlatform = async () => {
+    if (!user?.id) return;
+    if (byokActiveId == null) { setShowBotSelector(false); return; }
+    try {
+      const cur = byokModels.find(m => m.id === byokActiveId);
+      if (cur) { await byokApi.setActive(user.id, cur.id, 0); setByokActiveId(null); }
+    } catch(e:any){ SafeAlert.alert('切换失败', e?.message || String(e)); }
+    setShowBotSelector(false);
+  };
+
+  const handleSwitchToMyModel = async (m: ByokModel) => {
+    if (!user?.id) return;
+    try {
+      await byokApi.setActive(user.id, m.id, 1);
+      setByokActiveId(m.id);
+      setShowBotSelector(false);
+    } catch(e:any){ SafeAlert.alert('切换失败', e?.message || String(e)); }
+  };
+
   const fetchBots = async () => {
     try {
       const result = await botApi.list({ page: 1, page_size: 20 });
@@ -2073,34 +2107,83 @@ function ChatDetailScreenInner() {
           onPress={() => setShowBotSelector(false)}
         >
           <View style={{ backgroundColor: isDark ? '#1e293b' : '#fff', borderRadius: 16, padding: 20, width: 300, maxHeight: 400 }}>
-            <Text style={{ fontSize: 17, fontWeight: '700', color: isDark ? '#f1f5f9' : '#0f172a', textAlign: 'center', marginBottom: 16 }}>选择 AI 模型</Text>
-            {availableBots.length === 0 ? (
-              <ActivityIndicator size="small" color={Colors.primary} style={{ marginVertical: 20 }} />
+            <Text style={{ fontSize: 17, fontWeight: '700', color: isDark ? '#f1f5f9' : '#0f172a', textAlign: 'center', marginBottom: 8 }}>选择 AI 模型</Text>
+            <View style={{ flexDirection:'row', backgroundColor: isDark ? '#0f172a' : '#f1f5f9', borderRadius:10, padding:2, marginBottom:12 }}>
+              <TouchableOpacity onPress={()=>setModelTab('platform')} style={{ flex:1, paddingVertical:7, borderRadius:8, backgroundColor: modelTab==='platform' ? (isDark?'#1e293b':'#fff') : 'transparent', alignItems:'center' }}>
+                <Text style={{ fontSize:13, fontWeight:'600', color: modelTab==='platform' ? (isDark?'#f1f5f9':'#0f172a') : '#64748b' }}>平台模型</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={()=>setModelTab('my')} style={{ flex:1, paddingVertical:7, borderRadius:8, backgroundColor: modelTab==='my' ? (isDark?'#1e293b':'#fff') : 'transparent', alignItems:'center' }}>
+                <Text style={{ fontSize:13, fontWeight:'600', color: modelTab==='my' ? (isDark?'#f1f5f9':'#0f172a') : '#64748b' }}>{'我的模型'}{byokActiveId!==null ? ' · 已启用' : ''}</Text>
+              </TouchableOpacity>
+            </View>
+            {modelTab === 'platform' ? (
+              availableBots.length === 0 ? (
+                <ActivityIndicator size="small" color={Colors.primary} style={{ marginVertical: 20 }} />
+              ) : (
+                <ScrollView style={{ maxHeight: 280 }}>
+                  {availableBots.map((bot) => (
+                    <TouchableOpacity
+                      key={bot.id}
+                      style={{
+                        flexDirection: 'row', alignItems: 'center',
+                        paddingVertical: 12, paddingHorizontal: 12,
+                        borderRadius: 10,
+                        backgroundColor: bot.id === currentBotId ? (isDark ? '#2d1b69' : '#f3eeff') : 'transparent',
+                        marginBottom: 4,
+                      }}
+                      onPress={() => handleBotSwitch(bot.id, bot.name)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', marginRight: 12 }}>
+                        <Ionicons name="sparkles" size={16} color="#fff" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 15, fontWeight: '600', color: isDark ? '#f1f5f9' : '#0f172a' }}>{bot.name}</Text>
+                        <Text style={{ fontSize: 11, color: isDark ? '#94a3b8' : '#64748b', marginTop: 2 }}>{bot.id === currentBotId ? '当前使用' : '点击切换'}</Text>
+                      </View>
+                      {bot.id === currentBotId && <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )
+            ) : byokModels.length === 0 ? (
+              <View style={{ paddingVertical: 20, alignItems:'center' }}>
+                <Ionicons name="cube-outline" size={40} color={isDark?'#475569':'#cbd5e1'} />
+                <Text style={{ color: isDark?'#94a3b8':'#64748b', marginTop:8, fontSize:13, textAlign:'center' }}>
+                  {'还没有自定义模型'}
+                </Text>
+                <TouchableOpacity onPress={()=>{ setShowBotSelector(false); setTimeout(()=>router.push('/my-models' as any),150); }} style={{ marginTop:12, backgroundColor:Colors.primary, paddingVertical:8, paddingHorizontal:16, borderRadius:8 }}>
+                  <Text style={{ color:'#fff', fontWeight:'600', fontSize:13 }}>{'去添加'}</Text>
+                </TouchableOpacity>
+              </View>
             ) : (
-              <ScrollView style={{ maxHeight: 300 }}>
-                {availableBots.map((bot) => (
+              <ScrollView style={{ maxHeight: 280 }}>
+                {byokModels.map((m) => (
                   <TouchableOpacity
-                    key={bot.id}
+                    key={m.id}
                     style={{
                       flexDirection: 'row', alignItems: 'center',
                       paddingVertical: 12, paddingHorizontal: 12,
                       borderRadius: 10,
-                      backgroundColor: bot.id === currentBotId ? (isDark ? '#2d1b69' : '#f3eeff') : 'transparent',
+                      backgroundColor: m.id === byokActiveId ? (isDark ? '#2d1b69' : '#f3eeff') : 'transparent',
                       marginBottom: 4,
                     }}
-                    onPress={() => handleBotSwitch(bot.id, bot.name)}
+                    onPress={() => handleSwitchToMyModel(m)}
                     activeOpacity={0.7}
                   >
-                    <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', marginRight: 12 }}>
-                      <Ionicons name="sparkles" size={16} color="#fff" />
+                    <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#10b981', justifyContent: 'center', alignItems: 'center', marginRight: 12 }}>
+                      <Ionicons name="briefcase" size={16} color="#fff" />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 15, fontWeight: '600', color: isDark ? '#f1f5f9' : '#0f172a' }}>{bot.name}</Text>
-                      <Text style={{ fontSize: 11, color: isDark ? '#94a3b8' : '#64748b', marginTop: 2 }}>{bot.id === currentBotId ? '当前使用' : '点击切换'}</Text>
+                      <Text style={{ fontSize: 15, fontWeight: '600', color: isDark ? '#f1f5f9' : '#0f172a' }}>{m.display_name}</Text>
+                      <Text style={{ fontSize: 11, color: isDark ? '#94a3b8' : '#64748b', marginTop: 2 }} numberOfLines={1}>{m.model_name} · {m.key_hint}</Text>
                     </View>
-                    {bot.id === currentBotId && <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />}
+                    {m.id === byokActiveId ? <Ionicons name="checkmark-circle" size={18} color={Colors.primary} /> : <Ionicons name="chevron-forward" size={16} color={isDark?'#64748b':'#94a3b8'} />}
                   </TouchableOpacity>
                 ))}
+                <TouchableOpacity onPress={()=>{ setShowBotSelector(false); setTimeout(()=>router.push('/my-models' as any),150); }} style={{ marginTop:8, paddingVertical:10, borderRadius:10, borderWidth:1, borderColor: isDark?'#334155':'#e2e8f0', alignItems:'center' }}>
+                  <Text style={{ color: Colors.primary, fontWeight:'600', fontSize:13 }}>{'＋ 添加新模型 / 管理'}</Text>
+                </TouchableOpacity>
               </ScrollView>
             )}
           </View>

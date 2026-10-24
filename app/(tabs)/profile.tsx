@@ -20,6 +20,7 @@ const ROUTE_MAP: Record<string, string> = {
   '积分明细': '/credits',
   '应用设置': '/settings',
   '帮助与反馈': '/help',
+  '我的 AI 模型': '/my-models',
 };
 
 const MENU_GROUPS = [
@@ -36,6 +37,7 @@ const MENU_GROUPS = [
       { icon: 'wallet-outline', label: '积分明细', desc: '充值与积分消费记录' },
       { icon: 'settings-outline', label: '应用设置', desc: '通用配置' },
       { icon: 'help-circle-outline', label: '帮助与反馈', desc: '使用帮助与联系客服' },
+      { icon: 'sparkles', label: '我的 AI 模型', desc: '配置你自己的模型，聊天走你的额度' },
     ],
   },
 ];
