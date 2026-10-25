@@ -941,20 +941,13 @@ function ChatDetailScreenInner() {
       title: botName,
       headerBackTitle: '', headerBackButtonDisplayMode: 'minimal',
       headerRight: () => {
-        // v1.0.46 常驻模型徽章：BYOK 绿色「我的·模型名」，平台灰色「平台」，一眼可辨
-        const activeByok = byokActiveId != null ? byokModels.find(m => m.id === byokActiveId) : null;
-        const badgeLabel = activeByok
-          ? '我的·' + (activeByok.display_name || activeByok.model_name || '自有')
-          : '平台';
-        const badgeColor = activeByok ? '#10b981' : (isDark ? '#cbd5e1' : '#64748b');
+        // v1.0.47 头部不再放挤标题的文字徽章；是否走「我的模型」用切换图标右上角小绿点表示
+        const byokOn = byokActiveId != null;
         return (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginRight: 8 }}>
-          <View style={{ flexDirection:'row', alignItems:'center', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, backgroundColor: activeByok ? 'rgba(16,185,129,0.14)' : (isDark ? 'rgba(148,163,184,0.18)' : 'rgba(100,116,139,0.10)'), maxWidth: 150 }}>
-            <Ionicons name={activeByok ? 'briefcase' : 'cube'} size={11} color={badgeColor} style={{ marginRight: 3 }} />
-            <Text numberOfLines={1} style={{ fontSize: 11, fontWeight: '600', color: badgeColor }}>{badgeLabel}</Text>
-          </View>
-          <TouchableOpacity onPress={() => { fetchBots(); fetchByokModels(); setShowBotSelector(true); setModelTab('platform'); }}>
-            <Ionicons name="swap-horizontal" size={20} color="#6030ff" />
+          <TouchableOpacity onPress={() => { fetchBots(); fetchByokModels(); setShowBotSelector(true); setModelTab('platform'); }} style={{ width: 30, height: 30, justifyContent: 'center', alignItems: 'center' }}>
+            <Ionicons name="swap-horizontal" size={22} color="#6030ff" />
+            {byokOn ? <View style={{ position:'absolute', top:1, right:1, width:8, height:8, borderRadius:4, backgroundColor:'#10b981', borderWidth:1.5, borderColor: isDark ? '#1e293b' : '#ffffff' }} /> : null}
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowSearch(!showSearch)}>
             <Ionicons name={showSearch ? "close" : "search"} size={22} color="#6030ff" />
@@ -1694,7 +1687,14 @@ function ChatDetailScreenInner() {
     }
   };
 
-  const handleBotSwitch = (newBotId: string, newBotName: string) => {
+  const handleBotSwitch = async (newBotId: string, newBotName: string) => {
+    // v1.0.47 选平台模型 = 真正停用账号级 BYOK，做到所见即所用（否则后端仍走自带模型）
+    try {
+      if (byokActiveId != null && user?.id) {
+        await byokApi.setActive(user.id, byokActiveId, 0);
+        setByokActiveId(null);
+      }
+    } catch (e) { console.warn('[BYOK] disable on platform switch failed', e); }
     setCurrentBotId(newBotId);
     setBotName(newBotName);
     const matched = availableBots.find((b: any) => b.id === newBotId);
