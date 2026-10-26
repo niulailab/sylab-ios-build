@@ -180,6 +180,9 @@ function FormModal({ visible, editing, onClose, onSaved }:{
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState('');
+  const [models, setModels] = useState<{id:string;name:string}[]>([]);
+  const [fetching, setFetching] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [providers, setProviders] = useState<{key:Provider;label:string}[]>(
     Object.entries(BYOK_PRESETS).map(([k,v])=>({key:k as Provider, label:(v as any).name}))
   );
@@ -203,11 +206,39 @@ function FormModal({ visible, editing, onClose, onSaved }:{
   const onPickProvider = (p:Provider) => {
     setProvider(p);
     const preset = BYOK_PRESETS[p];
+    setModels([]);
     if (!editing) {
       setBaseUrl(preset.url);
       setModelName(preset.default_model);
       setName(preset.name);
     }
+  };
+
+  // 填完 base_url + key 后点「获取」，从端点真实拉取可用模型列表
+  const onFetchModels = async () => {
+    if (!user?.id) return;
+    if (!baseUrl.trim()) { SafeAlert.alert('请先填写 Base URL'); return; }
+    if (!apiKey.trim() && !editing) { SafeAlert.alert('请先填写 API Key'); return; }
+    setFetching(true); setTestMsg('');
+    try {
+      const r = await byokApi.listModels({
+        base_url: baseUrl.trim().replace(/\/+$/,''),
+        api_key: apiKey.trim(),
+        provider,
+        user_id: user.id,
+        ...(editing ? { id: editing.id } : {}),
+      });
+      if (r.ok && r.models && r.models.length) {
+        setModels(r.models);
+        setPickerOpen(true);
+      } else if (r.ok) {
+        setTestMsg('⚠️ 端点未返回任何模型，请手动填写模型名');
+      } else {
+        setTestMsg('❌ ' + (r.msg || '获取失败'));
+      }
+    } catch(e:any) {
+      setTestMsg('❌ ' + (e?.message || String(e)));
+    } finally { setFetching(false); }
   };
 
   const onSave = async () => {
@@ -278,9 +309,17 @@ function FormModal({ visible, editing, onClose, onSaved }:{
                 style={[styles.input,{color:isDark?'#f1f5f9':'#0f172a', borderColor:isDark?'#334155':'#e2e8f0', backgroundColor:isDark?'#0f172a':'#fff'}]} />
 
               <Text style={styles.label}>模型名</Text>
-              <TextInput value={modelName} onChangeText={setModelName} placeholder="deepseek-chat" placeholderTextColor="#94a3b8"
-                autoCapitalize="none" autoCorrect={false}
-                style={[styles.input,{color:isDark?'#f1f5f9':'#0f172a', borderColor:isDark?'#334155':'#e2e8f0', backgroundColor:isDark?'#0f172a':'#fff'}]} />
+              <View style={{flexDirection:'row', alignItems:'center'}}>
+                <TextInput value={modelName} onChangeText={setModelName} placeholder="点右侧「获取」选择" placeholderTextColor="#94a3b8"
+                  autoCapitalize="none" autoCorrect={false}
+                  style={[styles.input,{flex:1, marginBottom:0, color:isDark?'#f1f5f9':'#0f172a', borderColor:isDark?'#334155':'#e2e8f0', backgroundColor:isDark?'#0f172a':'#fff'}]} />
+                <TouchableOpacity onPress={onFetchModels} disabled={fetching}
+                  style={{marginLeft:8, paddingHorizontal:12, height:38, borderRadius:8, justifyContent:'center', alignItems:'center', flexDirection:'row', backgroundColor:isDark?'#334155':'#e2e8f0'}}>
+                  {fetching
+                    ? <ActivityIndicator size="small" color={Colors.primary} />
+                    : <><Ionicons name="cloud-download-outline" size={15} color={isDark?'#cbd5e1':'#475569'} style={{marginRight:3}} /><Text style={{color:isDark?'#cbd5e1':'#475569', fontSize:12, fontWeight:'600'}}>获取</Text></>}
+                </TouchableOpacity>
+              </View>
 
               <View style={{flexDirection:'row', gap:8, marginTop:8}}>
                 <TouchableOpacity onPress={onTest} disabled={testing} style={[styles.btn,{backgroundColor:'#10b981', flex:1, flexDirection:'row', justifyContent:'center'}]}>
@@ -300,6 +339,26 @@ function FormModal({ visible, editing, onClose, onSaved }:{
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
+
+      {pickerOpen ? (
+        <View style={[StyleSheet.absoluteFill,{backgroundColor:'rgba(0,0,0,0.5)', justifyContent:'center', padding:24}]}>
+          <View style={{backgroundColor:isDark?'#1e293b':'#fff', borderRadius:14, maxHeight:'70%', overflow:'hidden'}}>
+            <Text style={{padding:14, fontSize:15, fontWeight:'700', color:isDark?'#f1f5f9':'#0f172a'}}>选择模型（{models.length}）</Text>
+            <FlatList data={models} keyExtractor={m=>m.id}
+              renderItem={({item})=>(
+                <TouchableOpacity onPress={()=>{ setModelName(item.id); setPickerOpen(false); }}
+                  style={{paddingHorizontal:14, paddingVertical:11, borderTopWidth:StyleSheet.hairlineWidth, borderTopColor:isDark?'#334155':'#e2e8f0'}}>
+                  <Text style={{fontSize:14, color:isDark?'#f1f5f9':'#0f172a'}} numberOfLines={1}>{item.id}</Text>
+                  {item.name && item.name!==item.id ? <Text style={{fontSize:11, color:'#94a3b8', marginTop:2}} numberOfLines={1}>{item.name}</Text> : null}
+                </TouchableOpacity>
+              )} />
+            <TouchableOpacity onPress={()=>setPickerOpen(false)}
+              style={{padding:13, alignItems:'center', borderTopWidth:StyleSheet.hairlineWidth, borderTopColor:isDark?'#334155':'#e2e8f0'}}>
+              <Text style={{color:'#64748b', fontWeight:'600'}}>取消</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
     </Modal>
   );
 }
