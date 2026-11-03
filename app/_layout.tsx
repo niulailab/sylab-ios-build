@@ -49,7 +49,9 @@ function RootLayoutNav() {
   return (
     <SafeAreaProvider>
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <StatusBar style="auto" />
+      {/* v1.0.49 fix: 状态栏文字必须固定深色。style="auto" 跟随系统深色模式会变白字，
+          而 App 的 Stack header 全部硬编码白底 #fff，系统深色时白字白底 → 状态栏（时间/信号/电量）看不见 */}
+      <StatusBar style="dark" />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="login" />
         <Stack.Screen name="(tabs)" />

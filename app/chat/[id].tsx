@@ -843,6 +843,16 @@ function ChatDetailScreenInner() {
   const costsVersionRef = useRef(0);
 
 
+  // v1.0.49 fix: 强制恢复状态栏。iOS 上 Modal（选模型/长按菜单/全屏视频）关闭后
+  // 状态栏可能没还回来，表现为顶部时间/信号/电量消失但布局高度不变。
+  // 每次进入聊天页显式恢复一次。
+  useEffect(() => {
+    if (Platform.OS === 'ios') {
+      StatusBar.setHidden(false);
+      StatusBar.setBarStyle('dark-content', true);
+    }
+  }, []);
+
   useEffect(() => {
     const unsub = NetInfo.addEventListener(state => {
       setIsOffline(!state.isConnected);

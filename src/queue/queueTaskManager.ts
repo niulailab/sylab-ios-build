@@ -422,6 +422,23 @@ class QueueTaskManagerImpl {
   private async backfill(task: QueueTask, since: number) {
     try {
       const { events } = await chatQueueApi.getEvents(task.taskId, since);
+      // v1.0.49 perf: 后台挂起期间任务仍在跑，回前台补拉可能积压数千条 delta。
+      // 原实现逐条 appendDelta（每条一次 zustand set → 一次 React 重渲染），
+      // 主线程被连续占满数十秒，表现为 App 卡死、点不动、只能杀后台重进。
+      // 改为：连续 delta 聚合成一次 appendDelta，并每 300 条让出一次主线程。
+      let buf = '';
+      let bufId: string | undefined;
+      let processed = 0;
+      const flushBuf = () => {
+        if (!buf) return;
+        const text = buf;
+        const mid = bufId;
+        buf = '';
+        bufId = undefined;
+        if (this.isAttached(task)) {
+          useChatStore.getState().appendDelta(text, mid);
+        }
+      };
       for (const ev of events) {
         if (task.seenIndexes.has(ev.index)) continue;
         task.seenIndexes.add(ev.index);
@@ -430,10 +447,10 @@ class QueueTaskManagerImpl {
           const clean = stripEmoji(ev.data.content);
           task.content += clean;
           task.status = '正在输入回复…';
-          if (this.isAttached(task)) {
-            useChatStore.getState().appendDelta(clean, ev.data?.id);
-          }
+          if (!bufId) bufId = ev.data?.id;
+          buf += clean;
         } else if (ev.event_type === 'conversation.message.completed') {
+          flushBuf();
           const data = ev.data || {};
           if (data.type === 'tool_response') {
             const tname = data.meta_data?.tool_name || '';
@@ -455,7 +472,12 @@ class QueueTaskManagerImpl {
             task.content = '';
           }
         }
+        if (++processed % 300 === 0) {
+          flushBuf();
+          await new Promise((r) => setTimeout(r, 0));
+        }
       }
+      flushBuf();
       this.schedulePersist(task);
       emit(AppEvents.CHAT_TASK_UPDATED);
     } catch (e) {
@@ -505,7 +527,14 @@ class QueueTaskManagerImpl {
     }, delay);
   }
 
+  private lastReconnectAt = 0;
+
   reconnectAll() {
+    // v1.0.49: AppState(QueueMgr) 和 useChatQueue 各有一个前台监听器，会同时触发重连，
+    // 叠加成双倍 backfill。3 秒内只允许重连一次。
+    const now = Date.now();
+    if (now - this.lastReconnectAt < 3000) return;
+    this.lastReconnectAt = now;
     for (const task of Array.from(this.tasks.values())) {
       if (!task.isStreaming) continue;
       if (!task.streamConn && !task.reconnectTimer) {

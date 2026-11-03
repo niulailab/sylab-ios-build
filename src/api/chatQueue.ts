@@ -147,7 +147,40 @@ export const chatQueueApi = {
         const j: QueueEventsResponse = await resp.json();
         if (aborted || done) return;
         errCount = 0;
-        for (const ev of j.events || []) applyEvent(ev);
+        // v1.0.49 perf: 回前台/弱网恢复时事件可能积压数千条（流式 delta 逐 token 一条），
+        // 逐条 applyEvent → 逐条 setState → React 连续重渲染，主线程被占满，表现为 App 卡死点不动。
+        // 这里把连续 delta 聚合成一次 onDelta，并每 200 条让出一次主线程。
+        {
+          const evs = j.events || [];
+          let buf = '';
+          let bufId: string | undefined;
+          const flushBuf = () => {
+            if (!buf) return;
+            const text = buf;
+            const mid = bufId;
+            buf = '';
+            bufId = undefined;
+            callbacks.onDelta(text, mid);
+          };
+          for (let ei = 0; ei < evs.length; ei++) {
+            const ev = evs[ei];
+            if (ev.event_type === 'conversation.message.delta' && ev.data && ev.data.content) {
+              const idx = typeof ev.index === 'number' ? ev.index : cursor;
+              callbacks.onEventIndex?.(idx);
+              cursor = Math.max(cursor, idx + 1);
+              if (!bufId) bufId = ev.data.id;
+              buf += ev.data.content;
+            } else {
+              flushBuf();
+              applyEvent(ev);
+            }
+            if ((ei + 1) % 200 === 0) {
+              flushBuf();
+              await new Promise((r) => setTimeout(r, 0));
+            }
+          }
+          flushBuf();
+        }
         const st = j.status;
         if (st === 'completed') {
           done = true;
