@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Storage } from '../utils/storage';
 import { authApi } from '../api/auth';
+import { resetSpaceCache } from '../api/bot';
 import { setSessionId, setBearerToken, clearAuth } from '../api/client';
 import { normalizeFileUrl } from '../utils/avatarUrl';
 import type { UserInfo, LoginResponse } from '../types/api';
@@ -137,6 +138,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
+    resetSpaceCache();
     try {
       await authApi.logout();
     } catch {}

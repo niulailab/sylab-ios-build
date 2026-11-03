@@ -7,7 +7,39 @@ import { webApiClient } from './client';
 import { API_PATHS, OPENAPI_CONNECTOR_ID } from '../constants';
 import type { SnowflakeId } from '../types/api';
 
-const SPACE_ID = '7666842042261045248';
+const FALLBACK_SPACE_ID = '7666842042261045248';
+
+// v1.0.50 fix: 原来这里硬编码了主账号的 space_id，导致**所有登录用户**（包括新注册账号）
+// 都去查主账号的 space，看到主账号技能库里的技能卡，属于跨账号数据泄露。
+// 现在改为按当前登录用户动态解析自己的 space（/api/playground_api/space/list），
+// 优先取 personal space；解析失败才回落到旧值，避免老用户白屏。
+let cachedSpaceId: string | null = null;
+
+/** 退出登录时调用，清掉 space 缓存 */
+export function resetSpaceCache() {
+  cachedSpaceId = null;
+}
+
+async function resolveSpaceId(): Promise<string> {
+  if (cachedSpaceId) return cachedSpaceId;
+  try {
+    const r = await webApiClient.post('/api/playground_api/space/list', {});
+    const d = r.data?.data || r.data;
+    const list: any[] = d?.bot_space_list || [];
+    if (list.length > 0) {
+      const personal = list.find((s: any) => Number(s?.space_type) === 1) || list[0];
+      const id = personal?.id;
+      if (id !== undefined && id !== null && String(id) !== '0') {
+        cachedSpaceId = String(id);
+        return cachedSpaceId;
+      }
+    }
+  } catch (e) {
+    console.warn('[bot] resolveSpaceId failed, fallback:', e);
+  }
+  return FALLBACK_SPACE_ID;
+}
+
 
 /** 归一化 Bot 列表项（后端字段名可能不统一，可能嵌套 basic_info/publish_info） */
 function normalizeBotItem(raw: any) {
@@ -41,7 +73,7 @@ export const botApi = {
       const resp = await webApiClient.post(
         '/api/intelligence_api/search/get_draft_intelligence_list',
         {
-          space_id: SPACE_ID,
+          space_id: await resolveSpaceId(),
           count: pageSize,
           offset: (page - 1) * pageSize,
         },
@@ -67,7 +99,7 @@ export const botApi = {
       const resp = await webApiClient.post(
         '/api/intelligence_api/search/get_draft_intelligence_list',
         {
-          space_id: SPACE_ID,
+          space_id: await resolveSpaceId(),
           keyword,
           count: pageSize,
           offset: (page - 1) * pageSize,
