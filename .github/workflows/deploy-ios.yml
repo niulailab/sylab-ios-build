@@ -59,11 +59,10 @@ jobs:
         run: |
           SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
           TAG="${{ github.event.inputs.tag }}"
-          sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "
-            # 只改 sylab-unsigned.ipa 这个 location 块内的 filename，避免全局替换误伤旧版本入口（v138 等）
-            sed -i -E '/location = \/sylab-ios\/sylab-unsigned\.ipa/,/^[[:space:]]*\}/ s|filename="sylab-v[0-9]+\.ipa"|filename="sylab-'$TAG'.ipa"|' /etc/nginx/sites-enabled/default;
-            grep -n 'Content-Disposition' /etc/nginx/sites-enabled/default;
-            nginx -t && systemctl reload nginx && echo reloaded"
+          # 用服务器上的独立脚本做替换：只改 sylab-unsigned.ipa 这个 location 块内的 filename，
+          # 不碰旧版本入口（v138 等）。脚本内部断言「必须恰好命中 1 行」，避免像内联 sed 那样静默不生效。
+          sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "bash /root/sylab-fix-ipa-filename.sh $TAG"
+          sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "grep -n 'Content-Disposition' /etc/nginx/sites-enabled/default"
       - name: Verify deployed
         run: |
           SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
@@ -71,6 +70,8 @@ jobs:
           sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "
             ls -l /var/www/sylab-ios/sylab-unsigned.ipa; md5sum /var/www/sylab-ios/sylab-unsigned.ipa"
           # 通过公网 https 地址校验真实下载名，避免本地根路径取不到 header
-          CD=$(curl -skI --max-time 60 "https://s.symsgf.xyz/sylab-ios/sylab-unsigned.ipa?cb=$(date +%s)" | grep -i 'content-disposition' || true)
+          # 用 Range GET 而不是 HEAD：CF 对 HEAD 常返回空 header，会造成误报
+          UA="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+          CD=$(curl -sk --max-time 60 -A "$UA" -r 0-0 -D - -o /dev/null "https://s.symsgf.xyz/sylab-ios/sylab-unsigned.ipa?cb=$(date +%s)" | grep -i 'content-disposition' || true)
           echo "$CD"
           echo "$CD" | grep -q "sylab-$TAG.ipa"
