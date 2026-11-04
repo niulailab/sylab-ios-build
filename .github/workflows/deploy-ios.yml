@@ -60,7 +60,8 @@ jobs:
           SSHO="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
           TAG="${{ github.event.inputs.tag }}"
           sshpass -p "$SSH_PASS" ssh $SSHO root@36.137.84.216 "
-            sed -i -E 's#filename=\"sylab-v[0-9]+\.ipa\"#filename=\"sylab-$TAG.ipa\"#g' /etc/nginx/sites-enabled/default;
+            # 只改 sylab-unsigned.ipa 这个 location 块内的 filename，避免全局替换误伤旧版本入口（v138 等）
+            sed -i -E '/location = \/sylab-ios\/sylab-unsigned\.ipa/,/^[[:space:]]*\}/ s|filename="sylab-v[0-9]+\.ipa"|filename="sylab-'$TAG'.ipa"|' /etc/nginx/sites-enabled/default;
             grep -n 'Content-Disposition' /etc/nginx/sites-enabled/default;
             nginx -t && systemctl reload nginx && echo reloaded"
       - name: Verify deployed

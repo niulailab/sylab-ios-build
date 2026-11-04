@@ -117,7 +117,8 @@ function createClient(options: ClientOptions): AxiosInstance {
 
 // 4 种客户端实例
 let _sessionId: string | undefined;
-let _bearerToken: string | undefined = process.env.EXPO_PUBLIC_DEFAULT_PAT || "pat_fb5f8dccaaf858b78152bff3788686c76a46a4bfe95736eb94441da0d40e6ed4";
+// v1.0.51: 不再内置任何 PAT。Bearer 令牌由 store/auth 在登录后用当前 session 现场签发（见 api/pat.ts）
+let _bearerToken: string | undefined;
 
 export function setSessionId(id: string) { _sessionId = id; }
 export function setBearerToken(token: string) { _bearerToken = token; }

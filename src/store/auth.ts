@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { Storage } from '../utils/storage';
 import { authApi } from '../api/auth';
 import { resetSpaceCache } from '../api/bot';
+import { createPersonalPat, LEAKED_PAT } from '../api/pat';
 import { setSessionId, setBearerToken, clearAuth } from '../api/client';
 import { normalizeFileUrl } from '../utils/avatarUrl';
 import type { UserInfo, LoginResponse } from '../types/api';
@@ -43,15 +44,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         setSessionId(sessionId);
         set({ sessionId });
       }
-      if (patToken) {
+      // v1.0.51: 老版本写死的主账号 PAT 已泄露，本地存到这个值一律丢弃重签
+      if (patToken && patToken !== LEAKED_PAT) {
         setBearerToken(patToken);
         set({ patToken });
       } else if (sessionId) {
-        // Old user without PAT in storage - set default fallback
-        const defaultPat = "pat_fb5f8dccaaf858b78152bff3788686c76a46a4bfe95736eb94441da0d40e6ed4";
-        setBearerToken(defaultPat);
-        await Storage.setItem(PAT_KEY, defaultPat);
-        set({ patToken: defaultPat });
+        const ownPat = await createPersonalPat();
+        if (ownPat) {
+          setBearerToken(ownPat);
+          await Storage.setItem(PAT_KEY, ownPat);
+          set({ patToken: ownPat });
+        } else {
+          console.warn('[auth] restore: create own PAT failed, openapi calls may 401');
+        }
       }
       if (userStr) {
         set({ user: JSON.parse(userStr) });
@@ -88,11 +93,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         setSessionId(sessionKey);
       }
 
-      const defaultPat = process.env.EXPO_PUBLIC_DEFAULT_PAT || 'pat_fb5f8dccaaf858b78152bff3788686c76a46a4bfe95736eb94441da0d40e6ed4';
-      await Storage.setItem(PAT_KEY, defaultPat);
-      setBearerToken(defaultPat);
+      // v1.0.51: 用当前 session 现场签发本用户的 PAT（不再共用主账号令牌）
+      const ownPat = await createPersonalPat();
+      if (ownPat) {
+        await Storage.setItem(PAT_KEY, ownPat);
+        setBearerToken(ownPat);
+      } else {
+        console.warn('[auth] login: create own PAT failed, openapi calls may 401');
+      }
       await Storage.setItem(USER_KEY, JSON.stringify(user));
-      set({ user, sessionId: sessionKey || null, patToken: defaultPat, isLoading: false });
+      set({ user, sessionId: sessionKey || null, patToken: ownPat || null, isLoading: false });
     } catch (error) {
       set({ isLoading: false });
       throw error;
