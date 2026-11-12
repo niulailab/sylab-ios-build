@@ -2,7 +2,7 @@
   "expo": {
     "name": "sylab",
     "slug": "sylab-app",
-    "version": "1.0.53",
+    "version": "1.0.54",
     "orientation": "portrait",
     "scheme": "sylab",
     "userInterfaceStyle": "automatic",
@@ -20,7 +20,7 @@
         },
         "UIViewControllerBasedStatusBarAppearance": false
       },
-      "buildNumber": "53"
+      "buildNumber": "54"
     },
     "android": {
       "adaptiveIcon": {
@@ -33,7 +33,7 @@
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.RECORD_AUDIO"
       ],
-      "versionCode": 43
+      "versionCode": 44
     },
     "web": {
       "bundler": "metro",

@@ -3,7 +3,7 @@ import { Storage } from '../utils/storage';
 import { authApi } from '../api/auth';
 import { resetSpaceCache } from '../api/bot';
 import { createPersonalPat, LEAKED_PAT } from '../api/pat';
-import { setSessionId, setBearerToken, clearAuth } from '../api/client';
+import { setSessionId, setBearerToken, clearAuth, setPatRefresher } from '../api/client';
 import { normalizeFileUrl } from '../utils/avatarUrl';
 import type { UserInfo, LoginResponse } from '../types/api';
 
@@ -47,17 +47,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // v1.0.51: 老版本写死的主账号 PAT 已泄露，本地存到这个值一律丢弃重签
       // v1.0.52: 冷启动一律用当前 session 重签一次。任何本地脏 PAT（已吊销 / 串号 / 泄露值）
       //          都能自愈，避免升级后首次打开历史消息空白、必须手动重新登录一次
-      if (sessionId) {
+      // v1.0.54: 本地有可用 PAT 就直接用，不再每次冷启动强制重签。
+      // 旧实现（v1.0.52）冷启动必签，而签发是「先删后建」：弱网下删除成功、创建失败，
+      // 账号下 PAT 会彻底消失，本地那份同时失效 → 所有 OpenAPI 401 → 会话列表空白，
+      // 必须重新登录才恢复。真失效时由 api/client 的 401 自愈钩子兜底重签。
+      const usablePat = patToken && patToken !== LEAKED_PAT ? patToken : null;
+      if (usablePat) {
+        setBearerToken(usablePat);
+        set({ patToken: usablePat });
+      } else if (sessionId) {
         const ownPat = await createPersonalPat();
         if (ownPat) {
           setBearerToken(ownPat);
           await Storage.setItem(PAT_KEY, ownPat);
           set({ patToken: ownPat });
-        } else if (patToken && patToken !== LEAKED_PAT) {
-          // session 暂时不可用（网络抖动等）时降级复用本地 PAT
-          setBearerToken(patToken);
-          set({ patToken });
-          console.warn('[auth] restore: reissue failed, fallback to stored PAT');
         } else {
           console.warn('[auth] restore: no usable PAT, openapi calls may 401');
         }
@@ -168,6 +171,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setUser: (user) => set({ user }),
 }));
 
-
-
-
+// v1.0.54: 给 OpenAPI 客户端注册 PAT 自愈钩子。
+// 收到 401 时用当前 session 现场重签一次 PAT 并重试原请求，避免「列表空白 + 被迫重新登录」。
+// 并发去重：同一时刻只允许一次签发，其余请求复用同一个 Promise。
+let _patRefreshing: Promise<string | null> | null = null;
+setPatRefresher(async () => {
+  if (_patRefreshing) return _patRefreshing;
+  _patRefreshing = (async () => {
+    const t = await createPersonalPat();
+    if (t) {
+      setBearerToken(t);
+      try {
+        await Storage.setItem(PAT_KEY, t);
+      } catch (e) {}
+      useAuthStore.setState({ patToken: t });
+    }
+    return t;
+  })();
+  try {
+    return await _patRefreshing;
+  } finally {
+    _patRefreshing = null;
+  }
+});

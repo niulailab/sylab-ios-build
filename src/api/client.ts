@@ -16,6 +16,14 @@ interface ClientOptions {
   apiKey?: string;
 }
 
+// v1.0.54: OpenAPI(PAT) 401 自愈钩子。由 store/auth 注册。
+// 收到 401 时用当前 session 重签一次 PAT 并重试原请求，
+// 不再直接失败（旧行为：PAT 失效 → 会话列表/消息全 401 → 界面空白，只能重新登录）
+let _patRefresher: (() => Promise<string | null>) | null = null;
+export function setPatRefresher(fn: (() => Promise<string | null>) | null) {
+  _patRefresher = fn;
+}
+
 function createClient(options: ClientOptions): AxiosInstance {
   const { baseURL, authMode, sessionId, bearerToken, apiKey } = options;
 
@@ -80,7 +88,7 @@ function createClient(options: ClientOptions): AxiosInstance {
       }
       return response;
     },
-    (error: AxiosError) => {
+    async (error: AxiosError) => {
       if (ENABLE_LOG) {
         console.error(`[API Error] ${error.response?.status} ${error.config?.url}`, error.message);
       }
@@ -103,6 +111,24 @@ function createClient(options: ClientOptions): AxiosInstance {
         // v111: removed debug alert, keep console.error only
       }
       if (error.response?.status === 401) {
+        // v1.0.54: bearer(PAT) 401 先用 session 重签一次 PAT 再重试原请求。
+        // PAT 可能被别的设备/旧版本删掉，或签发时网络中断；重签能无感自愈。
+        const cfg: any = (error as any).config || {};
+        if (authMode === 'bearer' && _patRefresher && !cfg._patRetried) {
+          cfg._patRetried = true;
+          try {
+            const fresh = await _patRefresher();
+            if (fresh) {
+              setBearerToken(fresh);
+              cfg.headers = Object.assign({}, cfg.headers || {}, {
+                Authorization: 'Bearer ' + fresh,
+              });
+              return client.request(cfg);
+            }
+          } catch (e) {
+            console.warn('[API] pat refresh failed', e);
+          }
+        }
         // 401 未授权，抛出特殊错误让上层处理踢下线
         const authError = new Error('UNAUTHORIZED') as any;
         authError.code = 401;
