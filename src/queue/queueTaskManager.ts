@@ -736,6 +736,12 @@ class QueueTaskManagerImpl {
     this.tasks.delete(task.taskId);
     this.removePersist(task.conversationId);
     emit(AppEvents.CHAT_TASK_UPDATED);
+    // [FIX N+1 请求风暴 2026-11-12] 只有任务真正结束才通知列表刷新。
+    // 原来列表页监听 CHAT_TASK_UPDATED，而 onEventIndex 每来一个流事件就 emit 一次，
+    // 一轮对话几十次 emit -> 1.5s 窗口内堆积多个定时器 -> 同一秒并发多次整表刷新，
+    // 每次 50 个会话各发一个 message/list 请求 -> 瞬间 200 个请求打满连接池，
+    // 发消息排队超时，表现为「卡住、消息发不出去」。
+    emit(AppEvents.CHAT_TASK_FINISHED);
   }
 
   // ---------------- page attach/detach ----------------

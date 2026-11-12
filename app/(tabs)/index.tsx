@@ -23,6 +23,8 @@ import {
   Shadows,
 } from "../../src/constants/theme";
 import { chatApi } from "../../src/api/chat";
+// [FIX N+1 请求风暴 2026-11-12] 会话预览统一走并发闸门 + 短缓存
+import { getConvMessagesBatch } from "../../src/utils/convMsgCache";
 import { filesApi } from "../../src/api/files";
 import { AppEvents, subscribe, emit } from "../../src/utils/events";
 import { useAuthStore } from "../../src/store/auth";
@@ -234,11 +236,11 @@ export default function ProjectsScreen() {
 
       const convMsgMap = new Map<string, any[]>();
       try {
-        const msgResults = await Promise.all(
-          filteredConvs.map(conv => chatApi.getMessages(conv.id, { page_num: 1, page_size: 5 }).catch(() => null))
-        );
-        msgResults.forEach((result, idx) => {
-          if (result?.items) convMsgMap.set(filteredConvs[idx].id, result.items);
+        // [FIX N+1 请求风暴 2026-11-12] 原来这里对 50 个会话同时发 50 个请求，
+        // 改成限并发 4 + 30 秒缓存，且与对话页共享同一份结果。
+        const msgResults = await getConvMessagesBatch(filteredConvs.map(c => c.id), 5);
+        msgResults.forEach((items, idx) => {
+          if (items && items.length) convMsgMap.set(filteredConvs[idx].id, items);
         });
       } catch {}
 

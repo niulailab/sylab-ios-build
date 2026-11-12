@@ -15,5 +15,7 @@ export function emit(event: string) {
 export const AppEvents = {
   CONVERSATIONS_CHANGED: 'conversations_changed',
   CHAT_TASK_UPDATED: 'chat_task_updated',
+  // [FIX N+1 请求风暴 2026-11-12] 只在任务真正结束时发一次，用于列表刷新
+  CHAT_TASK_FINISHED: 'chat_task_finished',
   CHAT_VIDEO_UPDATED: 'chat_video_updated',
 };

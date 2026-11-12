@@ -7,6 +7,8 @@ import { useRouter } from 'expo-router';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../../src/constants/theme';
 import { useTheme } from '../../src/hooks/useTheme';
 import { chatApi } from '../../src/api/chat';
+// [FIX N+1 请求风暴 2026-11-12] 会话预览统一走并发闸门 + 短缓存
+import { getConvMessagesCached } from '../../src/utils/convMsgCache';
 import { filesApi } from '../../src/api/files';
 import { useAuthStore } from '../../src/store/auth';
 import { Storage } from '../../src/utils/storage';
@@ -161,13 +163,18 @@ export default function ChatListScreen() {
     const syncActive = () => setActiveConvIds(queueManager.getActiveConversationIds());
     syncActive();
     const unsub1 = subscribe(AppEvents.CHAT_TASK_UPDATED, syncActive);
-    const unsub2 = subscribe(AppEvents.CHAT_TASK_UPDATED, () => {
-      setTimeout(() => {
+    // [FIX N+1 请求风暴 2026-11-12] 状态变化只更新小绿点，不再整表刷新。
+    // 列表刷新改由 CHAT_TASK_FINISHED（任务真正结束）触发，3 秒防抖。
+    let refreshTimer: any = null;
+    const unsub2 = subscribe(AppEvents.CHAT_TASK_FINISHED, () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
         setActiveConvIds(queueManager.getActiveConversationIds());
         try { fetchConversations(); } catch (e) {}
-      }, 1500);
+      }, 3000);
     });
-    return () => { unsub1(); unsub2(); };
+    return () => { unsub1(); unsub2(); if (refreshTimer) clearTimeout(refreshTimer); };
   }, []);
   const creatingRef = useRef(false);
 
@@ -184,10 +191,12 @@ export default function ChatListScreen() {
     let lastMessagePreview = '';
     let msgCount = 0;
     try {
-      const msgPromise = chatApi.getMessages(conv.id);
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000));
-      const msgResult = await Promise.race([msgPromise, timeoutPromise]);
-      const msgs = (msgResult as any).items || [];
+      // [FIX N+1 请求风暴 2026-11-12] 原来不传 page_size，后端按默认条数返回整段历史，
+      // 50 个会话并发拉取时响应体巨大。列表只需要最近几条做预览，取 5 条即可；
+      // 走 getConvMessagesCached 后还有并发闸门（最多 4 路）和 30 秒缓存。
+      const msgPromise = getConvMessagesCached(conv.id, 5);
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000));
+      const msgs = (await Promise.race([msgPromise, timeoutPromise])) as any[];
       msgCount = msgs.length;
       if (msgs.length > 0) {
         const latestMsg = msgs[0];
