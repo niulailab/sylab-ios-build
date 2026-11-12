@@ -1289,6 +1289,28 @@ function ChatDetailScreenInner() {
     }
     
     // If already streaming, queue the message
+    // [FIX 僵尸流式 2026-11-12] 切后台回来 store.isStreaming 可能是僵尸态：
+    // queueManager 里已经没有该会话的活跃任务（连接被系统冻死且没触发 onError）。
+    // 旧逻辑无条件排队 -> 消息永远发不出去，乐观插入的气泡又被 10 秒轮询覆盖，
+    // 表现为「消息闪一下就没了、我发的消息也不出现」，只能杀 App 重进。
+    // 现在先让 queueManager 自检僵尸连接，再核对是否真有活跃任务；没有就强制复位后正常发送。
+    if (useChatStore.getState().isStreaming) {
+      try { queueManager.reconnectAll(); } catch (e) {}
+      const _zcid = (conversationId || id || '') as string;
+      let _hasLiveTask = false;
+      try {
+        const _zt: any = _zcid ? queueManager.getTaskByConv(_zcid) : null;
+        const _ztIdle = _zt ? (Date.now() - (_zt.lastActivityAt || _zt.startedAt || 0)) : 0;
+        // 流式任务但 20 秒没有任何心跳/事件 = 僵尸（切后台被冻死），视为无活任务
+        _hasLiveTask = !!(_zt && _zt.isStreaming && _ztIdle < 20000);
+      } catch (e) { _hasLiveTask = true; }
+      if (!_hasLiveTask) {
+        console.warn('[Chat] stale isStreaming without live task, force reset and send directly');
+        try { if (_zcid) queueManager.cancelForConv(_zcid); } catch (e) {}
+        useChatStore.getState().clearStreaming();
+        messageQueueRef.current = [];
+      }
+    }
     if (useChatStore.getState().isStreaming) {
       messageQueueRef.current.push({ text, files: _files, fileIds }); console.log("[Queue] message QUEUED:", (text || "").substring(0,30), "total:", messageQueueRef.current.length);
       // Still add user message to display immediately

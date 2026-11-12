@@ -58,6 +58,8 @@ interface QueueTask {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   persistTimer: ReturnType<typeof setTimeout> | null;
   startedAt: number;
+  // [FIX 僵尸任务 2026-11-12] 最后一次收到流事件的时间，用于识别切后台被冻死的连接
+  lastActivityAt: number;
 }
 
 export interface PageCallbacks {
@@ -221,6 +223,7 @@ class QueueTaskManagerImpl {
       reconnectTimer: null,
       persistTimer: null,
       startedAt: p.savedAt || Date.now(),
+      lastActivityAt: Date.now(),
     };
   }
 
@@ -267,6 +270,7 @@ class QueueTaskManagerImpl {
       reconnectTimer: null,
       persistTimer: null,
       startedAt: Date.now(),
+      lastActivityAt: Date.now(),
     };
     this.tasks.set(task.taskId, task);
     this.persist(task);
@@ -297,6 +301,7 @@ class QueueTaskManagerImpl {
             this.commitStreamingMessage(task, store.streamingMessageId, store.streamingContent);
           }
           task.content += clean;
+          task.lastActivityAt = Date.now();
           task.status = '正在输入回复…';
           if (this.isAttached(task)) {
             useChatStore.getState().appendDelta(clean, messageId);
@@ -329,9 +334,12 @@ class QueueTaskManagerImpl {
         },
         onEventIndex: (idx) => {
           frameIdx = idx;
+          task.lastActivityAt = Date.now();
           task.lastEventIndex = Math.max(task.lastEventIndex, idx + 1);
           this.schedulePersist(task);
         },
+        // 轮询心跳：只要 /events 还能请求成功就算活着（服务端长时间无新事件也不算僵尸）
+        onAlive: () => { task.lastActivityAt = Date.now(); },
       },
       task.lastEventIndex
     );
@@ -537,7 +545,35 @@ class QueueTaskManagerImpl {
     this.lastReconnectAt = now;
     for (const task of Array.from(this.tasks.values())) {
       if (!task.isStreaming) continue;
+      const idle = now - (task.lastActivityAt || task.startedAt || 0);
+
+      // [FIX 僵尸连接 2026-11-12] iOS 切后台会冻死 pollEvents 的 setTimeout，
+      // tick 不再被调度，onError/onComplete 都不触发，但 task.streamConn 引用还在。
+      // 旧逻辑只判 !streamConn 才重连，僵尸连接永久挡住重连 → task.isStreaming 恒为 true
+      // → 聊天页 handleSend 把所有消息塞进队列发不出去，用户消息闪一下就消失，
+      // 必须杀 App 重进才恢复。现在：连接在但 12 秒无任何流事件，判定僵尸强杀重连。
+      if (task.streamConn && idle > 12000) {
+        console.warn('[QueueMgr] zombie stream, force reconnect:', task.taskId, 'idle', idle);
+        try { task.streamConn.abort(); } catch (e) {}
+        task.streamConn = null;
+        if (task.reconnectTimer) { clearTimeout(task.reconnectTimer); task.reconnectTimer = null; }
+        task.reconnectAttempts = 0;
+        this.scheduleReconnect(task);
+        continue;
+      }
+
+      // reconnectTimer 同样可能被后台冻结而永不触发，闲置过久则重建
+      if (task.reconnectTimer && idle > 60000) {
+        console.warn('[QueueMgr] stale reconnect timer, rebuild:', task.taskId, 'idle', idle);
+        clearTimeout(task.reconnectTimer);
+        task.reconnectTimer = null;
+        task.reconnectAttempts = 0;
+        this.scheduleReconnect(task);
+        continue;
+      }
+
       if (!task.streamConn && !task.reconnectTimer) {
+        task.reconnectAttempts = 0;
         this.scheduleReconnect(task);
       }
     }

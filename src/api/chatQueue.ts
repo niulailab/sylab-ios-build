@@ -98,6 +98,9 @@ export const chatQueueApi = {
       onIntermediateComplete?: (messageId: string, content: string) => void;
       onError: (error: Error) => void;
       onEventIndex?: (index: number) => void;
+      // [FIX 2026-11-12] 每次轮询成功都回调，用于上层判断连接是否真的活着。
+      // 切后台后 setTimeout 被冻死时这里不再触发，上层据此识别僵尸连接。
+      onAlive?: () => void;
     },
     since: number = 0,
     opts: { intervalMs?: number; maxErrors?: number } = {}
@@ -147,6 +150,7 @@ export const chatQueueApi = {
         const j: QueueEventsResponse = await resp.json();
         if (aborted || done) return;
         errCount = 0;
+        callbacks.onAlive?.();
         // v1.0.49 perf: 回前台/弱网恢复时事件可能积压数千条（流式 delta 逐 token 一条），
         // 逐条 applyEvent → 逐条 setState → React 连续重渲染，主线程被占满，表现为 App 卡死点不动。
         // 这里把连续 delta 聚合成一次 onDelta，并每 200 条让出一次主线程。

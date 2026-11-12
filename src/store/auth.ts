@@ -45,17 +45,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ sessionId });
       }
       // v1.0.51: 老版本写死的主账号 PAT 已泄露，本地存到这个值一律丢弃重签
-      if (patToken && patToken !== LEAKED_PAT) {
-        setBearerToken(patToken);
-        set({ patToken });
-      } else if (sessionId) {
+      // v1.0.52: 冷启动一律用当前 session 重签一次。任何本地脏 PAT（已吊销 / 串号 / 泄露值）
+      //          都能自愈，避免升级后首次打开历史消息空白、必须手动重新登录一次
+      if (sessionId) {
         const ownPat = await createPersonalPat();
         if (ownPat) {
           setBearerToken(ownPat);
           await Storage.setItem(PAT_KEY, ownPat);
           set({ patToken: ownPat });
+        } else if (patToken && patToken !== LEAKED_PAT) {
+          // session 暂时不可用（网络抖动等）时降级复用本地 PAT
+          setBearerToken(patToken);
+          set({ patToken });
+          console.warn('[auth] restore: reissue failed, fallback to stored PAT');
         } else {
-          console.warn('[auth] restore: create own PAT failed, openapi calls may 401');
+          console.warn('[auth] restore: no usable PAT, openapi calls may 401');
         }
       }
       if (userStr) {
